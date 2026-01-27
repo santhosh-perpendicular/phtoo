@@ -8,14 +8,123 @@ void main() {
   runApp(const PhotoSelectorApp());
 }
 
+/* ------------------- MAIN APP ------------------- */
+
 class PhotoSelectorApp extends StatelessWidget {
   const PhotoSelectorApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    return MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: UploadScreen(),
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(0xFF0B0F14),
+        primaryColor: const Color(0xFF7C4DFF),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF121826),
+          centerTitle: true,
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF7C4DFF),
+            padding: const EdgeInsets.all(14),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+        ),
+      ),
+      home: const LoginScreen(),
+    );
+  }
+}
+
+/* ------------------- BACKGROUND ------------------- */
+
+Widget darkBackground({required Widget child}) {
+  return Container(
+    decoration: const BoxDecoration(
+      gradient: LinearGradient(
+        colors: [
+          Color(0xFF05070A),
+          Color(0xFF0E1420),
+          Color(0xFF1A1F2B),
+        ],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      ),
+    ),
+    child: child,
+  );
+}
+
+/* ------------------- LOGIN SCREEN ------------------- */
+
+class LoginScreen extends StatelessWidget {
+  const LoginScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: darkBackground(
+        child: Center(
+          child: Container(
+            width: 340,
+            padding: const EdgeInsets.all(25),
+            decoration: BoxDecoration(
+              color: const Color(0xFF161B22),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.auto_awesome,
+                    size: 60, color: Color(0xFF7C4DFF)),
+                const SizedBox(height: 10),
+                const Text("AI Photo Selector",
+                    style:
+                        TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 20),
+                TextField(
+                  decoration: InputDecoration(
+                    hintText: "Username",
+                    filled: true,
+                    fillColor: const Color(0xFF0D1117),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  obscureText: true,
+                  decoration: InputDecoration(
+                    hintText: "Password",
+                    filled: true,
+                    fillColor: const Color(0xFF0D1117),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const UploadScreen()),
+                      );
+                    },
+                    child: const Text("LOGIN"),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -34,25 +143,47 @@ class _UploadScreenState extends State<UploadScreen> {
 
   Future<void> pickImages() async {
     final List<XFile> images = await picker.pickMultiImage();
-
     if (images.isEmpty) return;
 
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => PreviewScreen(images: images),
-      ),
+      MaterialPageRoute(builder: (_) => PreviewScreen(images: images)),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("AI Photo Selector")),
-      body: Center(
-        child: ElevatedButton(
-          onPressed: pickImages,
-          child: const Text("Select Photos"),
+      body: darkBackground(
+        child: Center(
+          child: Container(
+            width: 340,
+            padding: const EdgeInsets.all(25),
+            decoration: BoxDecoration(
+              color: const Color(0xFF161B22),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.cloud_upload,
+                    size: 60, color: Color(0xFF7C4DFF)),
+                const SizedBox(height: 15),
+                const Text("Upload Your Photos",
+                    style:
+                        TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 25),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: pickImages,
+                    icon: const Icon(Icons.photo),
+                    label: const Text("Select Photos"),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -81,78 +212,63 @@ class _PreviewScreenState extends State<PreviewScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Selected Photos")),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(8),
-            child: Text(
-              "Selected: ${images.length} photos",
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-          ),
-          Expanded(
-            child: GridView.builder(
-              padding: const EdgeInsets.all(10),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                crossAxisSpacing: 5,
-                mainAxisSpacing: 5,
+      appBar: AppBar(title: const Text("Preview & Analyze")),
+      body: darkBackground(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Text(
+                "Selected: ${images.length} photos",
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
-              itemCount: images.length,
-              itemBuilder: (context, index) {
-                return Stack(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.file(
-                        File(images[index].path),
-                        fit: BoxFit.cover,
-                        width: double.infinity,
-                        height: double.infinity,
-                      ),
+            ),
+            Expanded(
+              child: GridView.builder(
+                padding: const EdgeInsets.all(10),
+                gridDelegate:
+                    const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3,
+                  crossAxisSpacing: 6,
+                  mainAxisSpacing: 6,
+                ),
+                itemCount: images.length,
+                itemBuilder: (context, index) {
+                  return ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.file(
+                      File(images[index].path),
+                      fit: BoxFit.cover,
                     ),
-                    Positioned(
-                      top: 4,
-                      right: 4,
-                      child: GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            images.removeAt(index);
-                          });
+                  );
+                },
+              ),
+            ),
+
+            // 🔥 THIS WAS MISSING
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: images.isEmpty
+                      ? null
+                      : () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  ProcessingScreen(images: images),
+                            ),
+                          );
                         },
-                        child: const CircleAvatar(
-                          radius: 12,
-                          backgroundColor: Colors.red,
-                          child: Icon(Icons.close, size: 14, color: Colors.white),
-                        ),
-                      ),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: images.isEmpty
-                    ? null
-                    : () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => ProcessingScreen(images: images),
-                          ),
-                        );
-                      },
-                child: const Text("Upload & Analyze"),
+                  child: const Text("Upload & Analyze"),
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -188,15 +304,6 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
     }
 
     var response = await request.send();
-
-    if (response.statusCode != 200) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Upload failed")),
-      );
-      Navigator.pop(context);
-      return;
-    }
-
     var respStr = await response.stream.bytesToString();
     var data = json.decode(respStr);
 
@@ -213,49 +320,29 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("Processing")),
-      body: const Center(child: CircularProgressIndicator()),
+    return const Scaffold(
+      body: Center(child: CircularProgressIndicator()),
     );
   }
 }
 
-/* ------------------- RESULTS SCREEN (SHOWS ALL RANKED PHOTOS) ------------------- */
+/* ------------------- RESULTS SCREEN ------------------- */
 
 class ResultsScreen extends StatelessWidget {
   final List results;
   final List<XFile> images;
 
-  const ResultsScreen({
-    super.key,
-    required this.results,
-    required this.images,
-  });
+  const ResultsScreen(
+      {super.key, required this.results, required this.images});
 
   @override
   Widget build(BuildContext context) {
-    final rankedPhotos = results; // Show ALL photos, not only top 5
-
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("Ranked Photos"),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () {
-              Navigator.pushAndRemoveUntil(
-                context,
-                MaterialPageRoute(builder: (_) => const UploadScreen()),
-                (route) => false,
-              );
-            },
-          )
-        ],
-      ),
+      appBar: AppBar(title: const Text("Ranked Results")),
       body: ListView.builder(
-        itemCount: rankedPhotos.length,
+        itemCount: results.length,
         itemBuilder: (context, index) {
-          var item = rankedPhotos[index];
+          var item = results[index];
 
           XFile matchedImage = images.firstWhere(
             (img) => img.name == item['filename'],
@@ -264,6 +351,7 @@ class ResultsScreen extends StatelessWidget {
 
           return Card(
             margin: const EdgeInsets.all(10),
+            color: const Color(0xFF161B22),
             child: ListTile(
               leading: Image.file(
                 File(matchedImage.path),
@@ -275,13 +363,12 @@ class ResultsScreen extends StatelessWidget {
               subtitle: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text("File: ${item['filename']}"),
-                  const SizedBox(height: 6),
+                  Text(item['filename']),
+                  const SizedBox(height: 5),
                   LinearProgressIndicator(
                     value: (item['score'] as num) / 100,
                   ),
-                  const SizedBox(height: 4),
-                  Text("Score: ${item['score'].toStringAsFixed(1)}"),
+                  Text("Score: ${item['score']}"),
                 ],
               ),
             ),
