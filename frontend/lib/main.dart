@@ -1,6 +1,4 @@
 import 'dart:io';
-import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
@@ -10,6 +8,8 @@ void main() {
   runApp(const PhotoSelectorApp());
 }
 
+/* ------------------- APP ------------------- */
+
 class PhotoSelectorApp extends StatelessWidget {
   const PhotoSelectorApp({super.key});
 
@@ -17,13 +17,163 @@ class PhotoSelectorApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark(),
-      home: const UploadScreen(),
+      title: "PhotoSelector",
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(0xFF0D0D0D),
+        primaryColor: const Color(0xFFFFD600),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF0D0D0D),
+          centerTitle: true,
+          titleTextStyle: TextStyle(
+            color: Color(0xFFFFD600),
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFFFFD600),
+            foregroundColor: Colors.black,
+          ),
+        ),
+      ),
+      home: const LoginScreen(),
     );
   }
 }
 
-/* ================= UPLOAD SCREEN ================= */
+/* ------------------- LOGIN SCREEN ------------------- */
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final TextEditingController usernameController = TextEditingController();
+  final TextEditingController passwordController = TextEditingController();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0D0D0D),
+      body: Center(
+        child: Container(
+          width: 360,
+          padding: const EdgeInsets.all(30),
+          decoration: BoxDecoration(
+            color: const Color(0xFF121212),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: const Color(0xFFFFD600),
+              width: 2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFFFFD600).withOpacity(0.3),
+                blurRadius: 20,
+                spreadRadius: 2,
+              )
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                "LOGIN",
+                style: TextStyle(
+                  color: Color(0xFFFFD600),
+                  fontSize: 26,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 2,
+                ),
+              ),
+              const SizedBox(height: 30),
+
+              // Username
+              TextField(
+                controller: usernameController,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  labelText: "Username",
+                  labelStyle: const TextStyle(color: Color(0xFFFFD600)),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: const BorderSide(color: Color(0xFFFFD600)),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderSide: const BorderSide(color: Color(0xFFFFD600), width: 2),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              // Password
+              TextField(
+                controller: passwordController,
+                obscureText: true,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  labelText: "Password",
+                  labelStyle: const TextStyle(color: Color(0xFFFFD600)),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: const BorderSide(color: Color(0xFFFFD600)),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderSide: const BorderSide(color: Color(0xFFFFD600), width: 2),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 30),
+
+              // Button
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFFD600),
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 15),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 8,
+                  ),
+                  onPressed: () {
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const UploadScreen(),
+                      ),
+                    );
+                  },
+                  child: const Text(
+                    "ENTER",
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/* ------------------- UPLOAD SCREEN ------------------- */
 
 class UploadScreen extends StatefulWidget {
   const UploadScreen({super.key});
@@ -38,12 +188,13 @@ class _UploadScreenState extends State<UploadScreen> {
 
   Future<void> pickImages() async {
     try {
-      if (kIsWeb) {
+      if (Platform.isAndroid || Platform.isIOS) {
         final images = await _picker.pickMultiImage();
-        setState(() => selectedImages = images);
-      } else if (Platform.isAndroid || Platform.isIOS) {
-        final images = await _picker.pickMultiImage();
-        setState(() => selectedImages = images);
+        if (images != null) {
+          setState(() {
+            selectedImages = images;
+          });
+        }
       } else {
         final result = await FilePicker.platform.pickFiles(
           type: FileType.image,
@@ -60,7 +211,7 @@ class _UploadScreenState extends State<UploadScreen> {
         }
       }
     } catch (e) {
-      debugPrint("Pick error: $e");
+      debugPrint("Image pick error: $e");
     }
   }
 
@@ -87,41 +238,30 @@ class _UploadScreenState extends State<UploadScreen> {
             child: const Text("SELECT FILES"),
           ),
           const SizedBox(height: 10),
-          Text("Selected: ${selectedImages.length}"),
+          Text(
+            "FILES SELECTED: ${selectedImages.length}",
+            style: const TextStyle(color: Color(0xFFFFD600)),
+          ),
           const SizedBox(height: 10),
           Expanded(
             child: GridView.builder(
               padding: const EdgeInsets.all(10),
-              gridDelegate:
-                  const SliverGridDelegateWithFixedCrossAxisCount(
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 3,
                 crossAxisSpacing: 6,
                 mainAxisSpacing: 6,
               ),
               itemCount: selectedImages.length,
               itemBuilder: (context, index) {
-                final image = selectedImages[index];
-
-                if (kIsWeb) {
-                  return FutureBuilder(
-                    future: image.readAsBytes(),
-                    builder: (context, snapshot) {
-                      if (snapshot.hasData) {
-                        return Image.memory(
-                          snapshot.data!,
-                          fit: BoxFit.cover,
-                        );
-                      }
-                      return const Center(
-                          child: CircularProgressIndicator());
-                    },
-                  );
-                } else {
-                  return Image.file(
-                    File(image.path),
+                return Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: const Color(0xFFFFD600)),
+                  ),
+                  child: Image.file(
+                    File(selectedImages[index].path),
                     fit: BoxFit.cover,
-                  );
-                }
+                  ),
+                );
               },
             ),
           ),
@@ -130,7 +270,7 @@ class _UploadScreenState extends State<UploadScreen> {
               padding: const EdgeInsets.all(12),
               child: ElevatedButton(
                 onPressed: goToProcessing,
-                child: const Text("UPLOAD & RANK"),
+                child: const Text("UPLOAD & ANALYZE"),
               ),
             ),
         ],
@@ -139,11 +279,10 @@ class _UploadScreenState extends State<UploadScreen> {
   }
 }
 
-/* ================= PROCESSING SCREEN ================= */
+/* ------------------- PROCESSING SCREEN ------------------- */
 
 class ProcessingScreen extends StatefulWidget {
   final List<XFile> images;
-
   const ProcessingScreen({super.key, required this.images});
 
   @override
@@ -166,44 +305,29 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
 
       for (var img in widget.images) {
         request.files.add(
-          await http.MultipartFile.fromPath(
-            'files',
-            img.path,
-          ),
+          await http.MultipartFile.fromPath('files', img.path),
         );
       }
 
-      var streamed = await request.send();
-      var response = await http.Response.fromStream(streamed);
+      var response = await request.send();
 
       if (!mounted) return;
 
       if (response.statusCode == 200) {
-        final decoded = jsonDecode(response.body);
-        final List results = decoded['results'];
-
-        // Sort by score (highest first)
-        results.sort((a, b) =>
-            (b['score'] as num).compareTo(a['score'] as num));
-
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => ResultScreen(results: results),
-          ),
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Upload Successful")),
         );
       } else {
-        showError("Server Error ${response.statusCode}");
+        showError("Server Error: ${response.statusCode}");
       }
     } catch (e) {
-      showError("Upload Failed: $e");
+      showError("Connection Failed");
     }
   }
 
   String getBaseUrl() {
-    if (kIsWeb) {
-      return 'http://localhost:8000/upload-images';
-    } else if (Platform.isAndroid) {
+    if (Platform.isAndroid) {
       return 'http://10.0.2.2:8000/upload-images';
     } else {
       return 'http://localhost:8000/upload-images';
@@ -212,43 +336,16 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
 
   void showError(String message) {
     Navigator.pop(context);
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return const Scaffold(
-      body: Center(child: CircularProgressIndicator()),
-    );
-  }
-}
-
-/* ================= RESULT SCREEN ================= */
-
-class ResultScreen extends StatelessWidget {
-  final List results;
-
-  const ResultScreen({super.key, required this.results});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("RANKED PHOTOS")),
-      body: ListView.builder(
-        itemCount: results.length,
-        itemBuilder: (context, index) {
-          final item = results[index];
-
-          return ListTile(
-            leading: CircleAvatar(
-              child: Text("#${index + 1}"),
-            ),
-            title: Text(item['filename']),
-            subtitle:
-                Text("Score: ${item['score'].toStringAsFixed(2)}"),
-          );
-        },
+      body: Center(
+        child: CircularProgressIndicator(),
       ),
     );
   }
