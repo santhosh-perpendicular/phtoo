@@ -133,9 +133,10 @@ class _UploadScreenState extends State<UploadScreen> {
   final ImagePicker picker = ImagePicker();
 
   Future<void> pickImages() async {
-    final List<XFile>? images = await picker.pickMultiImage();
+    final List<XFile> images = await picker.pickMultiImage();
 
-    if (images == null || images.isEmpty) return;
+    if (images.isEmpty) return;
+    if (!mounted) return;
 
     Navigator.push(
       context,
@@ -256,7 +257,6 @@ class ProcessingScreen extends StatefulWidget {
 }
 
 class _ProcessingScreenState extends State<ProcessingScreen> {
-
   @override
   void initState() {
     super.initState();
@@ -279,6 +279,8 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
       var response = await request.send();
       var respStr = await response.stream.bytesToString();
 
+      if (!mounted) return;
+
       if (response.statusCode == 200) {
         var data = json.decode(respStr);
 
@@ -295,14 +297,18 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
         showError("Server Error: ${response.statusCode}");
       }
     } catch (e) {
+      if (!mounted) return;
       showError("Connection Failed");
     }
   }
 
   void showError(String message) {
+    if (!mounted) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
+
     Navigator.pop(context);
   }
 
