@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -71,7 +72,7 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFFFFD600).withAlpha(80), // fixed deprecated withOpacity
+                color: const Color(0xFFFFD600).withAlpha(80),
                 blurRadius: 20,
                 spreadRadius: 2,
               )
@@ -134,15 +135,6 @@ class _LoginScreenState extends State<LoginScreen> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFFFD600),
-                    foregroundColor: Colors.black,
-                    padding: const EdgeInsets.symmetric(vertical: 15),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    elevation: 8,
-                  ),
                   onPressed: () {
                     Navigator.pushReplacement(
                       context,
@@ -151,14 +143,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     );
                   },
-                  child: const Text(
-                    "ENTER",
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
+                  child: const Text("ENTER"),
                 ),
               ),
             ],
@@ -184,7 +169,7 @@ class _UploadScreenState extends State<UploadScreen> {
   Future<void> pickImages() async {
     try {
       if (Platform.isAndroid || Platform.isIOS) {
-        final List<XFile> images = await _picker.pickMultiImage(); // never null
+        final images = await _picker.pickMultiImage();
         setState(() {
           selectedImages = images;
         });
@@ -193,7 +178,6 @@ class _UploadScreenState extends State<UploadScreen> {
           type: FileType.image,
           allowMultiple: true,
         );
-
         if (result != null && result.paths.isNotEmpty) {
           setState(() {
             selectedImages = result.paths
@@ -286,6 +270,8 @@ class ProcessingScreen extends StatefulWidget {
 }
 
 class _ProcessingScreenState extends State<ProcessingScreen> {
+  List<dynamic> results = [];
+
   @override
   void initState() {
     super.initState();
@@ -300,20 +286,19 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
       );
 
       for (var img in widget.images) {
-        request.files.add(
-          await http.MultipartFile.fromPath('files', img.path),
-        );
+        request.files.add(await http.MultipartFile.fromPath('files', img.path));
       }
 
       var response = await request.send();
+      var respStr = await response.stream.bytesToString();
 
       if (!mounted) return;
 
       if (response.statusCode == 200) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Upload Successful")),
-        );
+        var data = jsonDecode(respStr);
+        setState(() {
+          results = data['results'];
+        });
       } else {
         showError("Server Error: ${response.statusCode}");
       }
@@ -331,21 +316,31 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
   }
 
   void showError(String message) {
-    Navigator.pop(context);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: Color(0xFF0D0D0D),
-      body: Center(
-        child: CircularProgressIndicator(
-          color: Color(0xFFFFD600),
-        ),
-      ),
+    return Scaffold(
+      backgroundColor: const Color(0xFF0D0D0D),
+      body: results.isEmpty
+          ? const Center(child: CircularProgressIndicator(color: Color(0xFFFFD600)))
+          : ListView.builder(
+              itemCount: results.length,
+              itemBuilder: (context, index) {
+                var item = results[index];
+                return ListTile(
+                  title: Text(
+                    item['filename'],
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  trailing: Text(
+                    item['score'].toString(),
+                    style: const TextStyle(color: Color(0xFFFFD600)),
+                  ),
+                );
+              },
+            ),
     );
   }
 }
