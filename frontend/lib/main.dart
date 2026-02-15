@@ -9,7 +9,6 @@ void main() {
 }
 
 /* ------------------- APP ------------------- */
-
 class PhotoSelectorApp extends StatelessWidget {
   const PhotoSelectorApp({super.key});
 
@@ -44,7 +43,6 @@ class PhotoSelectorApp extends StatelessWidget {
 }
 
 /* ------------------- LOGIN SCREEN ------------------- */
-
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -73,7 +71,7 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFFFFD600).withOpacity(0.3),
+                color: const Color(0xFFFFD600).withAlpha(80), // fixed deprecated withOpacity
                 blurRadius: 20,
                 spreadRadius: 2,
               )
@@ -110,7 +108,6 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
               ),
-
               const SizedBox(height: 20),
 
               // Password
@@ -131,10 +128,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
               ),
-
               const SizedBox(height: 30),
 
-              // Button
+              // Enter Button
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
@@ -174,7 +170,6 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 /* ------------------- UPLOAD SCREEN ------------------- */
-
 class UploadScreen extends StatefulWidget {
   const UploadScreen({super.key});
 
@@ -189,19 +184,17 @@ class _UploadScreenState extends State<UploadScreen> {
   Future<void> pickImages() async {
     try {
       if (Platform.isAndroid || Platform.isIOS) {
-        final images = await _picker.pickMultiImage();
-        if (images != null) {
-          setState(() {
-            selectedImages = images;
-          });
-        }
+        final List<XFile> images = await _picker.pickMultiImage(); // never null
+        setState(() {
+          selectedImages = images;
+        });
       } else {
         final result = await FilePicker.platform.pickFiles(
           type: FileType.image,
           allowMultiple: true,
         );
 
-        if (result != null) {
+        if (result != null && result.paths.isNotEmpty) {
           setState(() {
             selectedImages = result.paths
                 .whereType<String>()
@@ -256,10 +249,14 @@ class _UploadScreenState extends State<UploadScreen> {
                 return Container(
                   decoration: BoxDecoration(
                     border: Border.all(color: const Color(0xFFFFD600)),
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  child: Image.file(
-                    File(selectedImages[index].path),
-                    fit: BoxFit.cover,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.file(
+                      File(selectedImages[index].path),
+                      fit: BoxFit.cover,
+                    ),
                   ),
                 );
               },
@@ -280,7 +277,6 @@ class _UploadScreenState extends State<UploadScreen> {
 }
 
 /* ------------------- PROCESSING SCREEN ------------------- */
-
 class ProcessingScreen extends StatefulWidget {
   final List<XFile> images;
   const ProcessingScreen({super.key, required this.images});
@@ -344,8 +340,11 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
   @override
   Widget build(BuildContext context) {
     return const Scaffold(
+      backgroundColor: Color(0xFF0D0D0D),
       body: Center(
-        child: CircularProgressIndicator(),
+        child: CircularProgressIndicator(
+          color: Color(0xFFFFD600),
+        ),
       ),
     );
   }
