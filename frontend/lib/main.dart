@@ -1,4 +1,4 @@
-import 'dart:convert'; 
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -68,7 +68,8 @@ class PhotoSelectorApp extends StatelessWidget {
           ),
         ),
 
-        cardTheme: CardTheme(
+        // ✅ FIXED: CardThemeData
+        cardTheme: CardThemeData(
           color: const Color(0xFF121212),
           elevation: 6,
           shape: RoundedRectangleBorder(
@@ -108,8 +109,9 @@ class _LoginScreenState extends State<LoginScreen> {
               width: 1.5,
             ),
             boxShadow: [
+              // ✅ FIXED: withValues
               BoxShadow(
-                color: Color(0xFFFFD600).withOpacity(0.25), // ✅ no const here
+                color: const Color(0xFFFFD600).withValues(alpha: 0.25),
                 blurRadius: 25,
                 spreadRadius: 2,
               ),
