@@ -1,4 +1,4 @@
-import 'dart:convert';
+import 'dart:convert'; 
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -20,21 +20,59 @@ class PhotoSelectorApp extends StatelessWidget {
       title: "PhotoSelector",
       theme: ThemeData(
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF0D0D0D),
+        scaffoldBackgroundColor: const Color(0xFF0B0B0B),
         primaryColor: const Color(0xFFFFD600),
+
         appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF0D0D0D),
+          backgroundColor: Color(0xFF0B0B0B),
           centerTitle: true,
+          elevation: 0,
           titleTextStyle: TextStyle(
             color: Color(0xFFFFD600),
             fontSize: 20,
             fontWeight: FontWeight.bold,
+            letterSpacing: 1.2,
           ),
+          iconTheme: IconThemeData(color: Color(0xFFFFD600)),
         ),
+
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFFFFD600),
             foregroundColor: Colors.black,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            textStyle: const TextStyle(
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1.1,
+            ),
+          ),
+        ),
+
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0xFF151515),
+          labelStyle: const TextStyle(color: Color(0xFFFFD600)),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xFFFFD600)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(
+              color: Color(0xFFFFD600),
+              width: 2,
+            ),
+          ),
+        ),
+
+        cardTheme: CardTheme(
+          color: const Color(0xFF121212),
+          elevation: 6,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
           ),
         ),
       ),
@@ -58,24 +96,23 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0D0D0D),
       body: Center(
         child: Container(
           width: 360,
           padding: const EdgeInsets.all(30),
           decoration: BoxDecoration(
             color: const Color(0xFF121212),
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(18),
             border: Border.all(
               color: const Color(0xFFFFD600),
-              width: 2,
+              width: 1.5,
             ),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFFFFD600).withAlpha(80),
-                blurRadius: 20,
+                color: Color(0xFFFFD600).withOpacity(0.25), // ✅ no const here
+                blurRadius: 25,
                 spreadRadius: 2,
-              )
+              ),
             ],
           ),
           child: Column(
@@ -91,47 +128,19 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               ),
               const SizedBox(height: 30),
-
-              // Username
               TextField(
                 controller: usernameController,
                 style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  labelText: "Username",
-                  labelStyle: const TextStyle(color: Color(0xFFFFD600)),
-                  enabledBorder: OutlineInputBorder(
-                    borderSide: const BorderSide(color: Color(0xFFFFD600)),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderSide: const BorderSide(color: Color(0xFFFFD600), width: 2),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
+                decoration: const InputDecoration(labelText: "Username"),
               ),
               const SizedBox(height: 20),
-
-              // Password
               TextField(
                 controller: passwordController,
                 obscureText: true,
                 style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  labelText: "Password",
-                  labelStyle: const TextStyle(color: Color(0xFFFFD600)),
-                  enabledBorder: OutlineInputBorder(
-                    borderSide: const BorderSide(color: Color(0xFFFFD600)),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderSide: const BorderSide(color: Color(0xFFFFD600), width: 2),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
+                decoration: const InputDecoration(labelText: "Password"),
               ),
               const SizedBox(height: 30),
-
-              // Enter Button
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
@@ -164,43 +173,24 @@ class UploadScreen extends StatefulWidget {
 
 class _UploadScreenState extends State<UploadScreen> {
   List<XFile> selectedImages = [];
-  final ImagePicker _picker = ImagePicker();
+  final ImagePicker picker = ImagePicker();
 
   Future<void> pickImages() async {
-    try {
-      if (Platform.isAndroid || Platform.isIOS) {
-        final images = await _picker.pickMultiImage();
-        setState(() {
-          selectedImages = images;
-        });
-      } else {
-        final result = await FilePicker.platform.pickFiles(
-          type: FileType.image,
-          allowMultiple: true,
-        );
-        if (result != null && result.paths.isNotEmpty) {
-          setState(() {
-            selectedImages = result.paths
-                .whereType<String>()
-                .map((path) => XFile(path))
-                .toList();
-          });
-        }
+    if (Platform.isAndroid || Platform.isIOS) {
+      selectedImages = await picker.pickMultiImage();
+    } else {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: true,
+      );
+      if (result != null) {
+        selectedImages = result.paths
+            .whereType<String>()
+            .map((p) => XFile(p))
+            .toList();
       }
-    } catch (e) {
-      debugPrint("Image pick error: $e");
     }
-  }
-
-  void goToProcessing() {
-    if (selectedImages.isEmpty) return;
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ProcessingScreen(images: selectedImages),
-      ),
-    );
+    setState(() {});
   }
 
   @override
@@ -209,17 +199,14 @@ class _UploadScreenState extends State<UploadScreen> {
       appBar: AppBar(title: const Text("UPLOAD PHOTOS")),
       body: Column(
         children: [
-          const SizedBox(height: 20),
           ElevatedButton(
             onPressed: pickImages,
             child: const Text("SELECT FILES"),
           ),
-          const SizedBox(height: 10),
           Text(
             "FILES SELECTED: ${selectedImages.length}",
             style: const TextStyle(color: Color(0xFFFFD600)),
           ),
-          const SizedBox(height: 10),
           Expanded(
             child: GridView.builder(
               padding: const EdgeInsets.all(10),
@@ -229,31 +216,26 @@ class _UploadScreenState extends State<UploadScreen> {
                 mainAxisSpacing: 6,
               ),
               itemCount: selectedImages.length,
-              itemBuilder: (context, index) {
-                return Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: const Color(0xFFFFD600)),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.file(
-                      File(selectedImages[index].path),
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          if (selectedImages.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: ElevatedButton(
-                onPressed: goToProcessing,
-                child: const Text("UPLOAD & ANALYZE"),
+              itemBuilder: (_, i) => ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.file(
+                  File(selectedImages[i].path),
+                  fit: BoxFit.cover,
+                ),
               ),
             ),
+          ),
+          ElevatedButton(
+            child: const Text("UPLOAD & ANALYZE"),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ProcessingScreen(images: selectedImages),
+                ),
+              );
+            },
+          ),
         ],
       ),
     );
@@ -270,7 +252,7 @@ class ProcessingScreen extends StatefulWidget {
 }
 
 class _ProcessingScreenState extends State<ProcessingScreen> {
-  List<dynamic> results = [];
+  List<Map<String, dynamic>> results = [];
 
   @override
   void initState() {
@@ -279,64 +261,99 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
   }
 
   Future<void> uploadImages() async {
-    try {
-      var request = http.MultipartRequest(
-        'POST',
-        Uri.parse(getBaseUrl()),
+    var request = http.MultipartRequest(
+      'POST',
+      Uri.parse(getBaseUrl()),
+    );
+
+    for (var img in widget.images) {
+      request.files.add(
+        await http.MultipartFile.fromPath('files', img.path),
       );
-
-      for (var img in widget.images) {
-        request.files.add(await http.MultipartFile.fromPath('files', img.path));
-      }
-
-      var response = await request.send();
-      var respStr = await response.stream.bytesToString();
-
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        var data = jsonDecode(respStr);
-        setState(() {
-          results = data['results'];
-        });
-      } else {
-        showError("Server Error: ${response.statusCode}");
-      }
-    } catch (e) {
-      showError("Connection Failed");
     }
+
+    var response = await request.send();
+    var body = await response.stream.bytesToString();
+    var data = jsonDecode(body);
+
+    List<Map<String, dynamic>> sorted =
+        List<Map<String, dynamic>>.from(data['results']);
+
+    sorted.sort(
+      (a, b) => (b['score'] as num).compareTo(a['score'] as num),
+    );
+
+    setState(() => results = sorted);
   }
 
   String getBaseUrl() {
-    if (Platform.isAndroid) {
-      return 'http://10.0.2.2:8000/upload-images';
-    } else {
-      return 'http://localhost:8000/upload-images';
-    }
+    return Platform.isAndroid
+        ? 'http://10.0.2.2:8000/upload-images'
+        : 'http://localhost:8000/upload-images';
   }
 
-  void showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  XFile findImage(String filename) {
+    return widget.images.firstWhere(
+      (img) => img.name == filename,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0D0D0D),
+      appBar: AppBar(title: const Text("RANKED PHOTOS")),
       body: results.isEmpty
-          ? const Center(child: CircularProgressIndicator(color: Color(0xFFFFD600)))
+          ? const Center(
+              child: CircularProgressIndicator(
+                color: Color(0xFFFFD600),
+              ),
+            )
           : ListView.builder(
               itemCount: results.length,
-              itemBuilder: (context, index) {
-                var item = results[index];
-                return ListTile(
-                  title: Text(
-                    item['filename'],
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                  trailing: Text(
-                    item['score'].toString(),
-                    style: const TextStyle(color: Color(0xFFFFD600)),
+              itemBuilder: (_, index) {
+                final item = results[index];
+                final img = findImage(item['filename']);
+
+                return Card(
+                  margin: const EdgeInsets.all(10),
+                  child: Row(
+                    children: [
+                      Stack(
+                        alignment: Alignment.topLeft,
+                        children: [
+                          Image.file(
+                            File(img.path),
+                            width: 120,
+                            height: 120,
+                            fit: BoxFit.cover,
+                          ),
+                          Container(
+                            padding: const EdgeInsets.all(6),
+                            color: const Color(0xFFFFD600),
+                            child: Text(
+                              "#${index + 1}",
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.black,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            item['filename'],
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text("Score: ${item['score']}"),
+                        ],
+                      ),
+                    ],
                   ),
                 );
               },
