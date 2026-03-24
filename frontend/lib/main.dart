@@ -1,14 +1,26 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
+import 'package:google_sign_in/google_sign_in.dart';
 
 void main() {
   runApp(const PhotoSelectorApp());
 }
+
+/* ─────────────────────────── GOOGLE CLIENT ID ─────────────────────────── */
+const String _kWebClientId =
+    '734414556752-72q6jo53jis7v1dgrs3grbet5n3jtrha.apps.googleusercontent.com';
+
+/* ─────────────────────────── GOOGLE SIGN-IN (Web only) ─────────────────────────── */
+final GoogleSignIn _googleSignIn = GoogleSignIn(
+  clientId: _kWebClientId,
+  scopes: ['email', 'profile'],
+);
 
 /* ─────────────────────────── THEME ─────────────────────────── */
 const kGold    = Color(0xFFFFD600);
@@ -34,7 +46,7 @@ class AppSession {
 }
 
 /* ─────────────────────────── BASE URL ─────────────────────────── */
-String baseUrl() => Platform.isAndroid
+String baseUrl() => (!kIsWeb && Platform.isAndroid)
     ? 'http://10.0.2.2:8000'
     : 'http://localhost:8000';
 
@@ -199,7 +211,7 @@ class GridPainter extends CustomPainter {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   1. LOGIN SCREEN  — real API auth with token session
+   1. LOGIN SCREEN
 ═══════════════════════════════════════════════════════════════════════ */
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -208,15 +220,38 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _userCtrl = TextEditingController();
-  final _passCtrl = TextEditingController();
+  // ── Tab: 0=login/register  1=OTP ──
+  int _tab = 0;
+
+  // ── Username/Password ──
+  final _userCtrl  = TextEditingController();
+  final _passCtrl  = TextEditingController();
+  final _emailCtrl = TextEditingController();
   bool _obscure = true;
   bool _loading = false;
+  bool _googleLoading = false;
   bool _isRegister = false;
   bool _showRegisterHint = false;
   String? _error;
 
-  Future<void> _submit() async {
+  // ── Registration OTP ──
+  // Step 0 = fill form, Step 1 = enter OTP
+  int _regStep = 0;
+  final _regOtpCtrl = TextEditingController();
+  bool _regOtpLoading = false;
+  String? _regOtpError;
+  String? _regOtpSuccess;
+
+  // ── Login OTP ──
+  final _otpEmailCtrl = TextEditingController();
+  final _otpCodeCtrl  = TextEditingController();
+  bool _otpSent       = false;
+  bool _otpLoading    = false;
+  String? _otpError;
+  String? _otpSuccess;
+
+  /* ── Username/Password login ── */
+  Future<void> _submitLogin() async {
     final user = _userCtrl.text.trim();
     final pass = _passCtrl.text;
     if (user.isEmpty || pass.isEmpty) {
@@ -228,16 +263,14 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
     setState(() { _loading = true; _error = null; });
-
     try {
-      final endpoint = _isRegister ? '/auth/register' : '/auth/login';
       final resp = await http.post(
-        Uri.parse('${baseUrl()}$endpoint'),
+        Uri.parse('${baseUrl()}/auth/login'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'username': user, 'password': pass}),
       ).timeout(const Duration(seconds: 10));
 
-      if (resp.statusCode == 200 || resp.statusCode == 201) {
+      if (resp.statusCode == 200) {
         final body = jsonDecode(resp.body);
         AppSession.token = body['token'];
         AppSession.user  = Map<String, dynamic>.from(body['user']);
@@ -248,18 +281,10 @@ class _LoginScreenState extends State<LoginScreen> {
       } else {
         final body = jsonDecode(resp.body);
         final detail = body['detail'] ?? 'Something went wrong.';
-
-        // If not registered and tried to login → offer to switch to register
-        if (resp.statusCode == 404 && !_isRegister) {
-          setState(() {
-            _error = detail;
-            _showRegisterHint = true;
-          });
+        if (resp.statusCode == 404) {
+          setState(() { _error = detail; _showRegisterHint = true; });
         } else {
-          setState(() {
-            _error = detail;
-            _showRegisterHint = false;
-          });
+          setState(() { _error = detail; _showRegisterHint = false; });
         }
       }
     } catch (e) {
@@ -269,6 +294,185 @@ class _LoginScreenState extends State<LoginScreen> {
       });
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /* ── Step 1: Send registration OTP ── */
+  Future<void> _sendRegOtp() async {
+    final user  = _userCtrl.text.trim();
+    final pass  = _passCtrl.text;
+    final email = _emailCtrl.text.trim().toLowerCase();
+
+    if (user.isEmpty || pass.isEmpty || email.isEmpty) {
+      setState(() => _error = "Please fill in username, email, and password.");
+      return;
+    }
+    if (user.length < 3) {
+      setState(() => _error = "Username must be at least 3 characters.");
+      return;
+    }
+    if (pass.length < 4) {
+      setState(() => _error = "Password must be at least 4 characters.");
+      return;
+    }
+    if (!email.contains('@')) {
+      setState(() => _error = "Enter a valid email address.");
+      return;
+    }
+
+    setState(() { _loading = true; _error = null; _regOtpError = null; });
+    try {
+      final resp = await http.post(
+        Uri.parse('${baseUrl()}/auth/register/send-otp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'username': user, 'password': pass, 'email': email}),
+      ).timeout(const Duration(seconds: 15));
+
+      final body = jsonDecode(resp.body);
+      if (resp.statusCode == 200) {
+        setState(() {
+          _regStep      = 1;
+          _regOtpSuccess = 'OTP sent to $email — check your inbox.';
+          _regOtpError   = null;
+        });
+      } else {
+        setState(() => _error = body['detail'] ?? 'Failed to send OTP.');
+      }
+    } catch (e) {
+      setState(() => _error = 'Cannot reach server. Is the backend running?');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /* ── Step 2: Verify registration OTP and create account ── */
+  Future<void> _verifyRegOtp() async {
+    final email = _emailCtrl.text.trim().toLowerCase();
+    final code  = _regOtpCtrl.text.trim();
+    if (code.length != 6) {
+      setState(() => _regOtpError = 'Enter the 6-digit code from your email.');
+      return;
+    }
+    setState(() { _regOtpLoading = true; _regOtpError = null; });
+    try {
+      final resp = await http.post(
+        Uri.parse('${baseUrl()}/auth/register/verify-otp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'otp': code}),
+      ).timeout(const Duration(seconds: 10));
+
+      final body = jsonDecode(resp.body);
+      if (resp.statusCode == 200) {
+        AppSession.token = body['token'];
+        AppSession.user  = Map<String, dynamic>.from(body['user']);
+        if (mounted) {
+          Navigator.pushReplacement(
+              context, MaterialPageRoute(builder: (_) => const HomeScreen()));
+        }
+      } else {
+        setState(() => _regOtpError = body['detail'] ?? 'Invalid OTP.');
+      }
+    } catch (e) {
+      setState(() => _regOtpError = 'Cannot reach server. Is the backend running?');
+    } finally {
+      if (mounted) setState(() => _regOtpLoading = false);
+    }
+  }
+
+  /* ── Google Sign-In — Web only ── */
+  Future<void> _signInWithGoogle() async {
+    if (!kIsWeb) return;
+    setState(() { _googleLoading = true; _error = null; });
+    try {
+      final account = await _googleSignIn.signIn();
+      if (account == null) { setState(() => _googleLoading = false); return; }
+      final auth    = await account.authentication;
+      final idToken = auth.idToken ?? auth.accessToken;
+      if (idToken == null) {
+        setState(() { _error = 'Google returned no token.'; _googleLoading = false; });
+        return;
+      }
+      final resp = await http.post(
+        Uri.parse('${baseUrl()}/auth/google'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'id_token': idToken}),
+      ).timeout(const Duration(seconds: 15));
+      if (resp.statusCode == 200) {
+        final body = jsonDecode(resp.body);
+        AppSession.token = body['token'];
+        AppSession.user  = Map<String, dynamic>.from(body['user']);
+        if (mounted) {
+          Navigator.pushReplacement(
+              context, MaterialPageRoute(builder: (_) => const HomeScreen()));
+        }
+      } else {
+        final body = jsonDecode(resp.body);
+        setState(() => _error = body['detail'] ?? 'Google login failed.');
+      }
+    } catch (e) {
+      setState(() => _error = 'Google sign-in error: ${e.toString()}');
+    } finally {
+      if (mounted) setState(() => _googleLoading = false);
+    }
+  }
+
+  /* ── Send Login OTP ── */
+  Future<void> _sendOtp() async {
+    final email = _otpEmailCtrl.text.trim();
+    if (email.isEmpty || !email.contains('@')) {
+      setState(() { _otpError = 'Enter a valid email address.'; _otpSuccess = null; });
+      return;
+    }
+    setState(() { _otpLoading = true; _otpError = null; _otpSuccess = null; });
+    try {
+      final resp = await http.post(
+        Uri.parse('${baseUrl()}/auth/send-otp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email}),
+      ).timeout(const Duration(seconds: 15));
+      final body = jsonDecode(resp.body);
+      if (resp.statusCode == 200) {
+        setState(() { _otpSent = true; _otpSuccess = 'OTP sent to $email — check your inbox.'; });
+      } else {
+        setState(() => _otpError = body['detail'] ?? 'Failed to send OTP.');
+      }
+    } catch (e) {
+      setState(() => _otpError = 'Cannot reach server. Is the backend running?');
+    } finally {
+      if (mounted) setState(() => _otpLoading = false);
+    }
+  }
+
+  /* ── Verify Login OTP ── */
+  Future<void> _verifyOtp() async {
+    final email = _otpEmailCtrl.text.trim();
+    final code  = _otpCodeCtrl.text.trim();
+    if (code.length != 6) {
+      setState(() { _otpError = 'Enter the 6-digit code from your email.'; });
+      return;
+    }
+    setState(() { _otpLoading = true; _otpError = null; });
+    try {
+      final resp = await http.post(
+        Uri.parse('${baseUrl()}/auth/verify-otp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'otp': code}),
+      ).timeout(const Duration(seconds: 10));
+      final body = jsonDecode(resp.body);
+      if (resp.statusCode == 200) {
+        AppSession.token = body['token'];
+        AppSession.user  = Map<String, dynamic>.from(body['user']);
+        if (mounted) {
+          Navigator.pushReplacement(
+              context, MaterialPageRoute(builder: (_) => const HomeScreen()));
+        }
+      } else {
+        setState(() => _otpError = body['detail'] ?? 'Invalid OTP.');
+      }
+    } catch (e) {
+      setState(() => _otpError = 'Cannot reach server. Is the backend running?');
+    } finally {
+      if (mounted) setState(() => _otpLoading = false);
     }
   }
 
@@ -295,6 +499,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // ── Logo ──
                   Row(children: [
                     Container(
                       width: 36, height: 36,
@@ -310,95 +515,274 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 8),
                   const Text("AI Photo Selector",
                       style: TextStyle(color: kMuted, fontSize: 12, letterSpacing: 1.5)),
-                  const SizedBox(height: 40),
-                  SectionLabel(_isRegister ? "REGISTER" : "CREDENTIALS"),
-                  const SizedBox(height: 20),
-                  _buildField("USERNAME", _userCtrl, false),
-                  const SizedBox(height: 16),
-                  _buildField("PASSWORD", _passCtrl, _obscure,
-                      suffix: IconButton(
-                        icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility,
-                            color: kMuted, size: 18),
-                        onPressed: () => setState(() => _obscure = !_obscure),
-                      )),
-                  if (_error != null) ...[
-                    const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: kRed.withValues(alpha: 0.08),
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: kRed.withValues(alpha: 0.3)),
+                  const SizedBox(height: 28),
+
+                  // ── Tabs ──
+                  Row(children: [
+                    _tabBtn("PASSWORD", 0, Icons.lock_outline),
+                    const SizedBox(width: 8),
+                    _tabBtn("OTP EMAIL", 1, Icons.email_outlined),
+                  ]),
+                  const SizedBox(height: 24),
+
+                  // ══════════════════════════════════════════
+                  // TAB 0 — Username / Password + Register
+                  // ══════════════════════════════════════════
+                  if (_tab == 0) ...[
+                    // LOGIN
+                    if (!_isRegister) ...[
+                      const SectionLabel("CREDENTIALS"),
+                      const SizedBox(height: 20),
+                      _buildField("USERNAME", _userCtrl, false),
+                      const SizedBox(height: 16),
+                      _buildField("PASSWORD", _passCtrl, _obscure,
+                          suffix: IconButton(
+                            icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility,
+                                color: kMuted, size: 18),
+                            onPressed: () => setState(() => _obscure = !_obscure),
+                          )),
+                      if (_error != null) ...[
+                        const SizedBox(height: 12),
+                        _errorBox(_error!, hint: _showRegisterHint
+                            ? () => setState(() {
+                                  _isRegister = true; _error = null;
+                                  _showRegisterHint = false;
+                                })
+                            : null),
+                      ],
+                      const SizedBox(height: 28),
+                      _loading
+                          ? const Center(child: CircularProgressIndicator(color: kGold))
+                          : GoldButton(
+                              label: "ENTER",
+                              icon: Icons.arrow_forward,
+                              onPressed: _submitLogin),
+                    ],
+
+                    // REGISTER — STEP 0: fill form
+                    if (_isRegister && _regStep == 0) ...[
+                      const SectionLabel("REGISTER"),
+                      const SizedBox(height: 20),
+                      _buildField("USERNAME", _userCtrl, false),
+                      const SizedBox(height: 16),
+                      _buildField("EMAIL ADDRESS", _emailCtrl, false),
+                      const SizedBox(height: 16),
+                      _buildField("PASSWORD", _passCtrl, _obscure,
+                          suffix: IconButton(
+                            icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility,
+                                color: kMuted, size: 18),
+                            onPressed: () => setState(() => _obscure = !_obscure),
+                          )),
+                      const SizedBox(height: 8),
+                      // Info banner
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: kGold.withValues(alpha: 0.07),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: kGold.withValues(alpha: 0.3)),
+                        ),
+                        child: const Row(children: [
+                          Icon(Icons.info_outline, color: kGold, size: 13),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              "An OTP will be sent to your email to verify your account.",
+                              style: TextStyle(color: kGold, fontSize: 10, letterSpacing: 0.5),
+                            ),
+                          ),
+                        ]),
                       ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(children: [
-                            const Icon(Icons.error_outline, color: kRed, size: 14),
+                      if (_error != null) ...[
+                        const SizedBox(height: 12),
+                        _errorBox(_error!),
+                      ],
+                      const SizedBox(height: 28),
+                      _loading
+                          ? const Center(child: CircularProgressIndicator(color: kGold))
+                          : GoldButton(
+                              label: "SEND VERIFICATION OTP",
+                              icon: Icons.send,
+                              onPressed: _sendRegOtp),
+                    ],
+
+                    // REGISTER — STEP 1: enter OTP
+                    if (_isRegister && _regStep == 1) ...[
+                      const SectionLabel("VERIFY EMAIL"),
+                      const SizedBox(height: 16),
+                      if (_regOtpSuccess != null)
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          margin: const EdgeInsets.only(bottom: 14),
+                          decoration: BoxDecoration(
+                            color: kGreen.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: kGreen.withValues(alpha: 0.4)),
+                          ),
+                          child: Row(children: [
+                            const Icon(Icons.mark_email_read, color: kGreen, size: 14),
                             const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(_error!,
-                                  style: const TextStyle(
-                                      color: kRed, fontSize: 11, letterSpacing: 0.5)),
-                            ),
+                            Expanded(child: Text(_regOtpSuccess!,
+                                style: const TextStyle(color: kGreen, fontSize: 11))),
                           ]),
-                          if (_showRegisterHint) ...[
-                            const SizedBox(height: 8),
-                            GestureDetector(
-                              onTap: () => setState(() {
-                                _isRegister = true;
-                                _error = null;
-                                _showRegisterHint = false;
-                              }),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 10, vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: kGold.withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(3),
-                                  border: Border.all(color: kGold),
-                                ),
-                                child: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.person_add, color: kGold, size: 13),
-                                    SizedBox(width: 6),
-                                    Text("TAP HERE TO REGISTER",
-                                        style: TextStyle(
-                                            color: kGold, fontSize: 10,
-                                            letterSpacing: 1.5,
-                                            fontWeight: FontWeight.w700)),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        ],
+                        ),
+                      _buildField("6-DIGIT OTP CODE", _regOtpCtrl, false),
+                      if (_regOtpError != null) ...[
+                        const SizedBox(height: 12),
+                        _errorBox(_regOtpError!),
+                      ],
+                      const SizedBox(height: 24),
+                      _regOtpLoading
+                          ? const Center(child: CircularProgressIndicator(color: kGold))
+                          : Column(children: [
+                              GoldButton(
+                                  label: "VERIFY & CREATE ACCOUNT",
+                                  icon: Icons.verified,
+                                  onPressed: _verifyRegOtp),
+                              const SizedBox(height: 10),
+                              GoldButton(
+                                  label: "RESEND OTP",
+                                  outline: true,
+                                  icon: Icons.refresh,
+                                  onPressed: () => setState(() {
+                                        _regStep       = 0;
+                                        _regOtpCtrl.clear();
+                                        _regOtpError   = null;
+                                        _regOtpSuccess = null;
+                                      })),
+                            ]),
+                    ],
+
+                    const SizedBox(height: 16),
+                    // Google — Web only
+                    if (!_isRegister &&
+                        (kIsWeb || (!kIsWeb && (Platform.isAndroid || Platform.isIOS)))) ...[
+                      Row(children: [
+                        Expanded(child: Container(height: 1, color: kBorder)),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 12),
+                          child: Text("OR", style: TextStyle(color: kMuted, fontSize: 10, letterSpacing: 2)),
+                        ),
+                        Expanded(child: Container(height: 1, color: kBorder)),
+                      ]),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: double.infinity, height: 52,
+                        child: ElevatedButton(
+                          onPressed: _googleLoading ? null : _signInWithGoogle,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: Colors.black87,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                          ),
+                          child: _googleLoading
+                              ? const SizedBox(width: 20, height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: kGold))
+                              : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                                  const Text("G", style: TextStyle(color: Color(0xFF4285F4),
+                                      fontSize: 16, fontWeight: FontWeight.w800)),
+                                  const SizedBox(width: 10),
+                                  const Text("CONTINUE WITH GOOGLE",
+                                      style: TextStyle(fontSize: 12,
+                                          fontWeight: FontWeight.w700,
+                                          letterSpacing: 1.5, color: Colors.black87)),
+                                ]),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+
+                    Center(
+                      child: GestureDetector(
+                        onTap: () => setState(() {
+                          _isRegister = !_isRegister;
+                          _error      = null;
+                          _regStep    = 0;
+                          _regOtpCtrl.clear();
+                          _regOtpError   = null;
+                          _regOtpSuccess = null;
+                          _emailCtrl.clear();
+                        }),
+                        child: Text(
+                          _isRegister ? "Already have an account? LOGIN" : "No account? REGISTER",
+                          style: const TextStyle(color: kGold, fontSize: 11, letterSpacing: 1.5)),
                       ),
                     ),
                   ],
-                  const SizedBox(height: 32),
-                  _loading
-                      ? const Center(child: CircularProgressIndicator(color: kGold))
-                      : GoldButton(
-                          label: _isRegister ? "REGISTER" : "ENTER",
-                          icon: Icons.arrow_forward,
-                          onPressed: _submit),
-                  const SizedBox(height: 16),
-                  Center(
-                    child: GestureDetector(
-                      onTap: () => setState(() {
-                        _isRegister = !_isRegister;
-                        _error = null;
-                      }),
-                      child: Text(
-                        _isRegister
-                            ? "Already have an account? LOGIN"
-                            : "No account? REGISTER",
-                        style: const TextStyle(
-                            color: kGold, fontSize: 11, letterSpacing: 1.5)),
-                    ),
-                  ),
+
+                  // ══════════════════════════════════════════
+                  // TAB 1 — OTP Email Login
+                  // ══════════════════════════════════════════
+                  if (_tab == 1) ...[
+                    const SectionLabel("EMAIL OTP LOGIN"),
+                    const SizedBox(height: 20),
+                    _buildField("EMAIL ADDRESS", _otpEmailCtrl, false),
+                    if (_otpSent) ...[
+                      const SizedBox(height: 16),
+                      _buildField("6-DIGIT OTP CODE", _otpCodeCtrl, false),
+                    ],
+                    if (_otpError != null) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: kRed.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: kRed.withValues(alpha: 0.3)),
+                        ),
+                        child: Row(children: [
+                          const Icon(Icons.error_outline, color: kRed, size: 14),
+                          const SizedBox(width: 6),
+                          Expanded(child: Text(_otpError!,
+                              style: const TextStyle(color: kRed, fontSize: 11))),
+                        ]),
+                      ),
+                    ],
+                    if (_otpSuccess != null) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: kGreen.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: kGreen.withValues(alpha: 0.4)),
+                        ),
+                        child: Row(children: [
+                          const Icon(Icons.mark_email_read, color: kGreen, size: 14),
+                          const SizedBox(width: 6),
+                          Expanded(child: Text(_otpSuccess!,
+                              style: const TextStyle(color: kGreen, fontSize: 11))),
+                        ]),
+                      ),
+                    ],
+                    const SizedBox(height: 28),
+                    _otpLoading
+                        ? const Center(child: CircularProgressIndicator(color: kGold))
+                        : !_otpSent
+                            ? GoldButton(
+                                label: "SEND OTP",
+                                icon: Icons.send,
+                                onPressed: _sendOtp)
+                            : Column(children: [
+                                GoldButton(
+                                  label: "VERIFY & LOGIN",
+                                  icon: Icons.verified,
+                                  onPressed: _verifyOtp),
+                                const SizedBox(height: 10),
+                                GoldButton(
+                                  label: "RESEND OTP",
+                                  outline: true,
+                                  icon: Icons.refresh,
+                                  onPressed: () => setState(() {
+                                    _otpSent = false;
+                                    _otpCodeCtrl.clear();
+                                    _otpError   = null;
+                                    _otpSuccess = null;
+                                  })),
+                              ]),
+                  ],
+
                   const SizedBox(height: 24),
                   Center(
                     child: Text("POWERED BY GROQ AI + OPENCV",
@@ -415,6 +799,71 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  Widget _tabBtn(String label, int index, IconData icon) {
+    final active = _tab == index;
+    return GestureDetector(
+      onTap: () => setState(() {
+        _tab = index; _error = null; _otpError = null; _otpSuccess = null;
+        _regStep = 0;
+      }),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: active ? kGold : Colors.transparent,
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: active ? kGold : kBorder),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 13, color: active ? kBg : kMuted),
+          const SizedBox(width: 6),
+          Text(label, style: TextStyle(
+              color: active ? kBg : kMuted,
+              fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 1.5)),
+        ]),
+      ),
+    );
+  }
+
+  Widget _errorBox(String msg, {VoidCallback? hint}) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: kRed.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: kRed.withValues(alpha: 0.3)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.error_outline, color: kRed, size: 14),
+          const SizedBox(width: 6),
+          Expanded(child: Text(msg,
+              style: const TextStyle(color: kRed, fontSize: 11, letterSpacing: 0.5))),
+        ]),
+        if (hint != null) ...[
+          const SizedBox(height: 8),
+          GestureDetector(
+            onTap: hint,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: kGold.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(3),
+                border: Border.all(color: kGold),
+              ),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.person_add, color: kGold, size: 13),
+                SizedBox(width: 6),
+                Text("TAP HERE TO REGISTER",
+                    style: TextStyle(color: kGold, fontSize: 10,
+                        letterSpacing: 1.5, fontWeight: FontWeight.w700)),
+              ]),
+            ),
+          ),
+        ],
+      ]),
+    );
+  }
+
   Widget _buildField(String label, TextEditingController ctrl, bool obscure,
       {Widget? suffix}) {
     return Column(
@@ -427,7 +876,7 @@ class _LoginScreenState extends State<LoginScreen> {
           controller: ctrl,
           obscureText: obscure,
           style: const TextStyle(color: kText, fontSize: 14),
-          onSubmitted: (_) => _submit(),
+          onSubmitted: (_) => _submitLogin(),
           decoration: InputDecoration(
             filled: true,
             fillColor: kCard,
@@ -447,7 +896,7 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   2. HOME SCREEN — folder list + nav to upload
+   2. HOME SCREEN — No create folder button, no NEW icon
 ═══════════════════════════════════════════════════════════════════════ */
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -479,49 +928,6 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _loading = false);
   }
 
-  Future<void> _createFolder() async {
-    String? name;
-    await showDialog(
-      context: context,
-      builder: (ctx) {
-        final ctrl = TextEditingController();
-        return AlertDialog(
-          backgroundColor: kCard,
-          title: const Text("NEW FOLDER",
-              style: TextStyle(color: kGold, letterSpacing: 2, fontSize: 13)),
-          content: TextField(
-            controller: ctrl,
-            autofocus: true,
-            style: const TextStyle(color: kText),
-            decoration: const InputDecoration(
-              hintText: "Folder name",
-              hintStyle: TextStyle(color: kMuted),
-              enabledBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: kBorder)),
-              focusedBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: kGold)),
-            ),
-            onSubmitted: (v) { name = v; Navigator.pop(ctx); },
-          ),
-          actions: [
-            TextButton(
-              onPressed: () { name = ctrl.text; Navigator.pop(ctx); },
-              child: const Text("CREATE",
-                  style: TextStyle(color: kGold, letterSpacing: 1.5)),
-            ),
-          ],
-        );
-      },
-    );
-    if (name == null || name!.trim().isEmpty) return;
-    final resp = await http.post(
-      Uri.parse('${baseUrl()}/folders'),
-      headers: AppSession.authHeaders,
-      body: jsonEncode({'name': name!.trim()}),
-    );
-    if (resp.statusCode == 200) _loadFolders();
-  }
-
   Future<void> _deleteFolder(int id, String folderName) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -545,16 +951,18 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadFolders();
   }
 
-  void _logout() {
+  void _logout() async {
+    await _googleSignIn.signOut();
     http.post(Uri.parse('${baseUrl()}/auth/logout'),
         headers: AppSession.authHeaders);
     AppSession.token = null;
     AppSession.user  = null;
-    Navigator.pushReplacement(
-        context, MaterialPageRoute(builder: (_) => const LoginScreen()));
+    if (mounted) {
+      Navigator.pushReplacement(
+          context, MaterialPageRoute(builder: (_) => const LoginScreen()));
+    }
   }
 
-  // Auto folders now start with "[S" prefix e.g. "[S1 · 02 Mar 03:19]"
   static bool _isAutoFolder(String name) => name.startsWith('[S');
 
   Color _sessionFolderColor(String name) {
@@ -572,15 +980,12 @@ class _HomeScreenState extends State<HomeScreen> {
     final autoList   = _folders.where((f) => _isAutoFolder(f['name'])).toList();
     final manualList = _folders.where((f) => !_isAutoFolder(f['name'])).toList();
 
-    // Group auto folders by session prefix e.g. "S1 · 02 Mar 03:19"
     final Map<String, List<Map<String, dynamic>>> sessions = {};
     for (final f in autoList) {
-      // Extract session key from "[S1 · 02 Mar 03:19] 🏆 Excellent"
       final match = RegExp(r'\[([^\]]+)\]').firstMatch(f['name']);
-      final key = match?.group(1) ?? 'Session';
+      final key   = match?.group(1) ?? 'Session';
       sessions.putIfAbsent(key, () => []).add(f);
     }
-    // Sort sessions so newest is first
     final sessionKeys = sessions.keys.toList().reversed.toList();
 
     return Scaffold(
@@ -588,10 +993,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: buildAppBar(
         "HACKX  ·  ${AppSession.user?['username'] ?? ''}",
         actions: [
-          IconButton(
-              icon: const Icon(Icons.add_box_outlined, color: kGold),
-              tooltip: "New folder",
-              onPressed: _createFolder),
+          // ── Logout only — no create folder button ──
           IconButton(
               icon: const Icon(Icons.logout, color: kMuted),
               tooltip: "Logout",
@@ -604,8 +1006,6 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-
-                  // ── UPLOAD button ──────────────────────────────────
                   Padding(
                     padding: const EdgeInsets.all(16),
                     child: GoldButton(
@@ -619,9 +1019,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
 
-                  // ══════════════════════════════════════════════════
-                  // ANALYSIS SESSIONS — each run is a separate group
-                  // ══════════════════════════════════════════════════
                   if (sessionKeys.isNotEmpty) ...[
                     const Divider(color: kBorder, height: 1),
                     const Padding(
@@ -630,7 +1027,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     ...sessionKeys.map((sessionKey) {
                       final folders = sessions[sessionKey]!;
-                      // Sort within session: Excellent→Poor
                       const order = ['Excellent','Great','Good','Average','Below','Poor'];
                       folders.sort((a, b) {
                         int ai = order.indexWhere((o) => a['name'].contains(o));
@@ -648,7 +1044,6 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // Session header
                             Container(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 14, vertical: 10),
@@ -665,60 +1060,50 @@ class _HomeScreenState extends State<HomeScreen> {
                                 Text(sessionKey,
                                     style: const TextStyle(
                                         color: kGold, fontSize: 12,
-                                        fontWeight: FontWeight.w700,
-                                        letterSpacing: 1)),
+                                        fontWeight: FontWeight.w700, letterSpacing: 1)),
                                 const Spacer(),
                                 Text("${folders.length} folders",
-                                    style: const TextStyle(
-                                        color: kMuted, fontSize: 10)),
+                                    style: const TextStyle(color: kMuted, fontSize: 10)),
                               ]),
                             ),
-                            // Sub-folders
                             ...folders.map((f) {
-                              final color = _sessionFolderColor(f['name']);
-                              // Show just the grade part after "] "
+                              final color       = _sessionFolderColor(f['name']);
                               final displayName = f['name']
                                   .replaceFirst(RegExp(r'\[[^\]]+\]\s*'), '');
                               return InkWell(
                                 onTap: () => Navigator.push(
                                   context,
                                   MaterialPageRoute(
-                                    builder: (_) =>
-                                        FolderPhotosScreen(folder: f),
+                                    builder: (_) => FolderPhotosScreen(folder: f),
                                   ),
                                 ).then((_) => _loadFolders()),
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 14, vertical: 10),
                                   decoration: BoxDecoration(
-                                    border: Border(
-                                        top: BorderSide(color: kBorder)),
+                                    border: Border(top: BorderSide(color: kBorder)),
                                   ),
                                   child: Row(children: [
                                     Container(
                                       width: 6, height: 6,
                                       decoration: BoxDecoration(
-                                          color: color,
-                                          shape: BoxShape.circle),
+                                          color: color, shape: BoxShape.circle),
                                     ),
                                     const SizedBox(width: 10),
                                     Expanded(
                                       child: Text(displayName,
                                           style: TextStyle(
-                                              color: color,
-                                              fontSize: 12,
+                                              color: color, fontSize: 12,
                                               fontWeight: FontWeight.w600)),
                                     ),
                                     Icon(Icons.chevron_right,
-                                        color: color.withValues(alpha: 0.6),
-                                        size: 16),
+                                        color: color.withValues(alpha: 0.6), size: 16),
                                     IconButton(
                                       icon: const Icon(Icons.delete_outline,
                                           color: kMuted, size: 16),
                                       padding: EdgeInsets.zero,
                                       constraints: const BoxConstraints(),
-                                      onPressed: () =>
-                                          _deleteFolder(f['id'], f['name']),
+                                      onPressed: () => _deleteFolder(f['id'], f['name']),
                                     ),
                                   ]),
                                 ),
@@ -731,96 +1116,39 @@ class _HomeScreenState extends State<HomeScreen> {
                     const SizedBox(height: 8),
                   ],
 
-                  // ══════════════════════════════════════════════════
-                  // MY FOLDERS (manual)
-                  // ══════════════════════════════════════════════════
-                  const Divider(color: kBorder, height: 1),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
-                    child: Row(children: [
-                      const SectionLabel("MY FOLDERS"),
-                      const Spacer(),
-                      GestureDetector(
-                        onTap: _createFolder,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            border: Border.all(color: kGold),
-                            borderRadius: BorderRadius.circular(3),
-                          ),
-                          child: const Row(
-                            children: [
-                              Icon(Icons.add, color: kGold, size: 13),
-                              SizedBox(width: 4),
-                              Text("NEW",
-                                  style: TextStyle(
-                                      color: kGold, fontSize: 10,
-                                      letterSpacing: 1.5)),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ]),
-                  ),
-
-                  if (manualList.isEmpty)
+                  // ── Manual folders (no header new/plus button) ──
+                  if (manualList.isNotEmpty) ...[
+                    const Divider(color: kBorder, height: 1),
                     const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 24),
-                      child: Center(
-                        child: Text("No folders yet — tap NEW to create one",
-                            style: TextStyle(color: kMuted, fontSize: 11)),
-                      ),
-                    )
-                  else
+                      padding: EdgeInsets.fromLTRB(16, 14, 16, 8),
+                      child: SectionLabel("MY FOLDERS"),
+                    ),
                     ...manualList.map((f) => Column(
                           children: [
                             ListTile(
-                              contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 16),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16),
                               leading: const Icon(Icons.folder, color: kGold),
                               title: Text(f['name'],
                                   style: const TextStyle(
-                                      color: kText, letterSpacing: 1.5,
-                                      fontSize: 13)),
+                                      color: kText, letterSpacing: 1.5, fontSize: 13)),
                               subtitle: Text(f['created_at'] ?? '',
-                                  style: const TextStyle(
-                                      color: kMuted, fontSize: 10)),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(
-                                        Icons.add_photo_alternate,
-                                        color: kGold, size: 20),
-                                    tooltip: "Upload here",
-                                    onPressed: () => Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) =>
-                                            UploadScreen(folderId: f['id']),
-                                      ),
-                                    ).then((_) => _loadFolders()),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.delete_outline,
-                                        color: kMuted, size: 20),
-                                    onPressed: () =>
-                                        _deleteFolder(f['id'], f['name']),
-                                  ),
-                                ],
+                                  style: const TextStyle(color: kMuted, fontSize: 10)),
+                              trailing: IconButton(
+                                icon: const Icon(Icons.delete_outline,
+                                    color: kMuted, size: 20),
+                                onPressed: () => _deleteFolder(f['id'], f['name']),
                               ),
                               onTap: () => Navigator.push(
                                 context,
                                 MaterialPageRoute(
-                                  builder: (_) =>
-                                      FolderPhotosScreen(folder: f),
+                                  builder: (_) => FolderPhotosScreen(folder: f),
                                 ),
                               ).then((_) => _loadFolders()),
                             ),
                             const Divider(color: kBorder, height: 1),
                           ],
                         )),
+                  ],
 
                   const SizedBox(height: 24),
                 ],
@@ -831,7 +1159,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   3. FOLDER PHOTOS SCREEN — grid + list view with thumbnails
+   3. FOLDER PHOTOS SCREEN
 ═══════════════════════════════════════════════════════════════════════ */
 class FolderPhotosScreen extends StatefulWidget {
   final Map<String, dynamic> folder;
@@ -843,7 +1171,7 @@ class FolderPhotosScreen extends StatefulWidget {
 class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
   List<Map<String, dynamic>> _photos = [];
   bool _loading = true;
-  bool _gridView = true; // toggle between grid and list
+  bool _gridView = true;
 
   @override
   void initState() {
@@ -899,7 +1227,6 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
     return kRed;
   }
 
-
   Widget _buildGrid() {
     return GridView.builder(
       padding: const EdgeInsets.all(8),
@@ -907,26 +1234,36 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
           crossAxisCount: 3, crossAxisSpacing: 4, mainAxisSpacing: 4),
       itemCount: _photos.length,
       itemBuilder: (_, i) {
-        final p = _photos[i];
-        final score = (p['score'] as num).toDouble();
+        final p          = _photos[i];
+        final score      = (p['score'] as num).toDouble();
         final isPrecious = p['is_precious'] == 1;
         final showDelete = score < 65 && !isPrecious;
-        final path = p['filepath'] as String?;
+        final path       = p['filepath'] as String?;
 
         return GestureDetector(
           onTap: () => _showPhotoDetail(p),
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // Image
-              path != null && File(path).existsSync()
+              // On web: images can't be loaded by file path — show placeholder
+              (!kIsWeb && path != null && File(path).existsSync())
                   ? Image.file(File(path), fit: BoxFit.cover)
                   : Container(
                       color: kSurface,
-                      child: const Icon(Icons.image_not_supported,
-                          color: kMuted, size: 32)),
-
-              // Score badge bottom-left
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.image, color: kMuted, size: 28),
+                          const SizedBox(height: 4),
+                          Text(
+                            p['filename'] ?? '',
+                            style: const TextStyle(color: kMuted, fontSize: 7),
+                            textAlign: TextAlign.center,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      )),
               Positioned(
                 bottom: 4, left: 4,
                 child: Container(
@@ -941,16 +1278,12 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
                           fontSize: 9, fontWeight: FontWeight.w800)),
                 ),
               ),
-
-              // Precious heart
               if (isPrecious)
                 const Positioned(
                   top: 4, left: 4,
                   child: Icon(Icons.favorite, color: kGold, size: 14,
                       shadows: [Shadow(color: Colors.black, blurRadius: 4)]),
                 ),
-
-              // Delete overlay
               if (showDelete)
                 Positioned(
                   top: 4, right: 4,
@@ -965,8 +1298,6 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
                     ),
                   ),
                 ),
-
-              // Gold border if excellent
               if (score >= 90)
                 Container(
                   decoration: BoxDecoration(
@@ -988,11 +1319,11 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
       itemCount: _photos.length,
       separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (_, i) {
-        final p = _photos[i];
-        final score = (p['score'] as num).toDouble();
+        final p          = _photos[i];
+        final score      = (p['score'] as num).toDouble();
         final isPrecious = p['is_precious'] == 1;
         final showDelete = score < 65 && !isPrecious;
-        final path = p['filepath'] as String?;
+        final path       = p['filepath'] as String?;
 
         return GestureDetector(
           onTap: () => _showPhotoDetail(p),
@@ -1007,28 +1338,21 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
             ),
             child: Row(
               children: [
-                // Thumbnail
                 ClipRRect(
                   borderRadius: const BorderRadius.only(
-                      topLeft: Radius.circular(4),
-                      bottomLeft: Radius.circular(4)),
-                  child: path != null && File(path).existsSync()
-                      ? Image.file(File(path),
-                          width: 80, height: 80, fit: BoxFit.cover)
+                      topLeft: Radius.circular(4), bottomLeft: Radius.circular(4)),
+                  child: (!kIsWeb && path != null && File(path).existsSync())
+                      ? Image.file(File(path), width: 80, height: 80, fit: BoxFit.cover)
                       : Container(
                           width: 80, height: 80,
                           color: kSurface,
-                          child: const Icon(Icons.image_not_supported,
-                              color: kMuted, size: 28)),
+                          child: const Icon(Icons.image, color: kMuted, size: 28)),
                 ),
                 const SizedBox(width: 12),
-
-                // Info
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Filename + precious
                       Row(children: [
                         if (isPrecious)
                           const Padding(
@@ -1038,13 +1362,10 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
                         Expanded(
                           child: Text(p['filename'] ?? '',
                               style: const TextStyle(
-                                  color: kText, fontSize: 12,
-                                  fontWeight: FontWeight.w600),
+                                  color: kText, fontSize: 12, fontWeight: FontWeight.w600),
                               overflow: TextOverflow.ellipsis),
                         ),
                       ]),
-
-                      // Caption
                       if ((p['caption'] ?? '').isNotEmpty) ...[
                         const SizedBox(height: 4),
                         Row(children: [
@@ -1055,67 +1376,51 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
                                 style: const TextStyle(
                                     color: kMuted, fontSize: 10,
                                     fontStyle: FontStyle.italic),
-                                overflow: TextOverflow.ellipsis,
-                                maxLines: 2),
+                                overflow: TextOverflow.ellipsis, maxLines: 2),
                           ),
                         ]),
                       ],
-
                       const SizedBox(height: 6),
-
-                      // Score bar
                       Row(children: [
                         Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
                             color: _scoreColor(score).withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(2),
-                            border: Border.all(
-                                color: _scoreColor(score).withValues(alpha: 0.4)),
+                            border: Border.all(color: _scoreColor(score).withValues(alpha: 0.4)),
                           ),
                           child: Text("${score.toStringAsFixed(1)} / 100",
                               style: TextStyle(
                                   color: _scoreColor(score),
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700)),
+                                  fontSize: 10, fontWeight: FontWeight.w700)),
                         ),
                         if (showDelete) ...[
                           const SizedBox(width: 8),
                           Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 5, vertical: 2),
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                             decoration: BoxDecoration(
                               color: kRed.withValues(alpha: 0.15),
-                              border: Border.all(
-                                  color: kRed.withValues(alpha: 0.4)),
+                              border: Border.all(color: kRed.withValues(alpha: 0.4)),
                               borderRadius: BorderRadius.circular(2),
                             ),
                             child: const Text("LOW QUALITY",
-                                style: TextStyle(
-                                    color: kRed, fontSize: 8,
-                                    letterSpacing: 1)),
+                                style: TextStyle(color: kRed, fontSize: 8, letterSpacing: 1)),
                           ),
                         ],
                       ]),
-
-                      // Progress bar
                       const SizedBox(height: 5),
                       ClipRRect(
                         borderRadius: BorderRadius.circular(2),
                         child: LinearProgressIndicator(
                           value: score / 100,
                           backgroundColor: kBorder,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                              _scoreColor(score)),
+                          valueColor: AlwaysStoppedAnimation<Color>(_scoreColor(score)),
                           minHeight: 3,
                         ),
                       ),
                     ],
                   ),
                 ),
-
-                // Delete button
                 if (showDelete)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
@@ -1145,26 +1450,31 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Full image
             ClipRRect(
               borderRadius: const BorderRadius.only(
                   topLeft: Radius.circular(4), topRight: Radius.circular(4)),
-              child: path != null && File(path).existsSync()
+              child: (!kIsWeb && path != null && File(path).existsSync())
                   ? Image.file(File(path),
-                      width: double.infinity,
-                      fit: BoxFit.contain,
+                      width: double.infinity, fit: BoxFit.contain,
                       errorBuilder: (_, __, ___) => Container(
-                        height: 200,
-                        color: kSurface,
+                        height: 200, color: kSurface,
                         child: const Center(
-                          child: Icon(Icons.image_not_supported,
-                              color: kMuted, size: 48)),
+                          child: Icon(Icons.image_not_supported, color: kMuted, size: 48)),
                       ))
                   : Container(
                       height: 200, color: kSurface,
-                      child: const Center(
-                        child: Icon(Icons.image_not_supported,
-                            color: kMuted, size: 48))),
+                      child: Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.image, color: kMuted, size: 48),
+                            const SizedBox(height: 8),
+                            Text(p['filename'] ?? '',
+                                style: const TextStyle(color: kMuted, fontSize: 11),
+                                textAlign: TextAlign.center),
+                          ],
+                        ),
+                      )),
             ),
             Padding(
               padding: const EdgeInsets.all(14),
@@ -1173,8 +1483,7 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
                 children: [
                   Text(p['filename'] ?? '',
                       style: const TextStyle(
-                          color: kText, fontSize: 13,
-                          fontWeight: FontWeight.w700)),
+                          color: kText, fontSize: 13, fontWeight: FontWeight.w700)),
                   if ((p['caption'] ?? '').isNotEmpty) ...[
                     const SizedBox(height: 6),
                     Row(children: [
@@ -1183,8 +1492,7 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
                       Expanded(
                         child: Text(p['caption'],
                             style: const TextStyle(
-                                color: kMuted, fontSize: 11,
-                                fontStyle: FontStyle.italic)),
+                                color: kMuted, fontSize: 11, fontStyle: FontStyle.italic)),
                       ),
                     ]),
                   ],
@@ -1217,12 +1525,8 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
         showBack: true,
         onBack: () => Navigator.pop(context),
         actions: [
-          // Toggle grid/list
           IconButton(
-            icon: Icon(
-              _gridView ? Icons.view_list : Icons.grid_view,
-              color: kGold,
-            ),
+            icon: Icon(_gridView ? Icons.view_list : Icons.grid_view, color: kGold),
             tooltip: _gridView ? "List view" : "Grid view",
             onPressed: () => setState(() => _gridView = !_gridView),
           ),
@@ -1235,42 +1539,34 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.photo_library_outlined,
-                          color: kMuted, size: 48),
+                      const Icon(Icons.photo_library_outlined, color: kMuted, size: 48),
                       const SizedBox(height: 12),
                       const Text("NO PHOTOS IN THIS FOLDER",
-                          style: TextStyle(
-                              color: kMuted, fontSize: 12, letterSpacing: 2)),
+                          style: TextStyle(color: kMuted, fontSize: 12, letterSpacing: 2)),
                     ],
                   ),
                 )
               : Column(
                   children: [
-                    // Stats bar
                     Container(
                       color: kSurface,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 10),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                       child: Row(children: [
                         const Icon(Icons.photo, color: kGold, size: 14),
                         const SizedBox(width: 6),
                         Text("${_photos.length} PHOTOS",
-                            style: const TextStyle(
-                                color: kText, fontSize: 11, letterSpacing: 1.5)),
+                            style: const TextStyle(color: kText, fontSize: 11, letterSpacing: 1.5)),
                         const SizedBox(width: 16),
                         const Icon(Icons.emoji_events, color: kGold, size: 14),
                         const SizedBox(width: 6),
                         Text(
                           "BEST: ${_photos.map((p) => (p['score'] as num).toDouble()).reduce((a, b) => a > b ? a : b).toStringAsFixed(1)}",
-                          style: const TextStyle(
-                              color: kText, fontSize: 11, letterSpacing: 1.5),
+                          style: const TextStyle(color: kText, fontSize: 11, letterSpacing: 1.5),
                         ),
                       ]),
                     ),
                     const Divider(color: kBorder, height: 1),
-                    Expanded(
-                      child: _gridView ? _buildGrid() : _buildList(),
-                    ),
+                    Expanded(child: _gridView ? _buildGrid() : _buildList()),
                   ],
                 ),
     );
@@ -1278,7 +1574,7 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   4. UPLOAD SCREEN — pick images, mark precious, choose folder
+   4. UPLOAD SCREEN — Fixed for web (uses bytes not File path)
 ═══════════════════════════════════════════════════════════════════════ */
 class UploadScreen extends StatefulWidget {
   final int? folderId;
@@ -1288,29 +1584,38 @@ class UploadScreen extends StatefulWidget {
 }
 
 class _UploadScreenState extends State<UploadScreen> {
-  List<XFile> selectedImages = [];
-  // Per-photo precious set — stores index of precious photos
+  List<XFile> selectedImages    = [];
+  List<Uint8List> selectedBytes = []; // bytes for web preview
   final Set<int> _preciousIndexes = {};
   final ImagePicker picker = ImagePicker();
 
   Future<void> pickImages() async {
-    if (Platform.isAndroid || Platform.isIOS) {
-      final images = await picker.pickMultiImage();
-      setState(() {
-        selectedImages = images;
-        _preciousIndexes.clear();
-      });
+    List<XFile> picked = [];
+
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      picked = await picker.pickMultiImage();
     } else {
+      // Web & desktop: use file_picker to get bytes
       final result = await FilePicker.platform
-          .pickFiles(type: FileType.image, allowMultiple: true);
+          .pickFiles(type: FileType.image, allowMultiple: true, withData: true);
       if (result != null) {
-        setState(() {
-          selectedImages =
-              result.paths.whereType<String>().map((p) => XFile(p)).toList();
-          _preciousIndexes.clear();
-        });
+        picked = result.files.map((f) => XFile.fromData(f.bytes!, name: f.name)).toList();
       }
     }
+
+    if (picked.isEmpty) return;
+
+    // Pre-load bytes for all images (needed for web preview & upload)
+    final List<Uint8List> bytes = [];
+    for (final img in picked) {
+      bytes.add(await img.readAsBytes());
+    }
+
+    setState(() {
+      selectedImages = picked;
+      selectedBytes  = bytes;
+      _preciousIndexes.clear();
+    });
   }
 
   void _togglePrecious(int i) {
@@ -1330,13 +1635,12 @@ class _UploadScreenState extends State<UploadScreen> {
     return Scaffold(
       backgroundColor: kBg,
       appBar: buildAppBar(
-        widget.folderId != null ? "UPLOAD TO FOLDER" : "UPLOAD — ROOT",
+        widget.folderId != null ? "UPLOAD TO FOLDER" : "UPLOAD & ANALYZE",
         showBack: true,
         onBack: () => Navigator.pop(context),
       ),
       body: Column(
         children: [
-          // ── Info bar ──
           Container(
             color: kGold.withValues(alpha: 0.07),
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
@@ -1353,7 +1657,6 @@ class _UploadScreenState extends State<UploadScreen> {
               ],
             ),
           ),
-          // ── Count bar ──
           Container(
             color: kSurface,
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
@@ -1362,33 +1665,29 @@ class _UploadScreenState extends State<UploadScreen> {
                 const Icon(Icons.photo_library, color: kGold, size: 14),
                 const SizedBox(width: 6),
                 Text("${selectedImages.length} SELECTED",
-                    style: const TextStyle(
-                        color: kText, fontSize: 11, letterSpacing: 1.5)),
+                    style: const TextStyle(color: kText, fontSize: 11, letterSpacing: 1.5)),
                 if (preciousCount > 0) ...[
                   const SizedBox(width: 14),
                   const Icon(Icons.favorite, color: kGold, size: 13),
                   const SizedBox(width: 4),
                   Text("$preciousCount PRECIOUS",
-                      style: const TextStyle(
-                          color: kGold, fontSize: 11, letterSpacing: 1.5)),
+                      style: const TextStyle(color: kGold, fontSize: 11, letterSpacing: 1.5)),
                 ],
                 const Spacer(),
                 if (selectedImages.isNotEmpty)
                   GestureDetector(
                     onTap: () => setState(() {
                       selectedImages = [];
+                      selectedBytes  = [];
                       _preciousIndexes.clear();
                     }),
                     child: const Text("CLEAR ALL",
-                        style: TextStyle(
-                            color: kMuted, fontSize: 10, letterSpacing: 2)),
+                        style: TextStyle(color: kMuted, fontSize: 10, letterSpacing: 2)),
                   ),
               ],
             ),
           ),
           const Divider(color: kBorder, height: 1),
-
-          // ── Grid ──
           Expanded(
             child: selectedImages.isEmpty
                 ? Center(
@@ -1423,17 +1722,18 @@ class _UploadScreenState extends State<UploadScreen> {
                     itemCount: selectedImages.length,
                     itemBuilder: (_, i) {
                       final isPrecious = _preciousIndexes.contains(i);
+                      final bytes      = selectedBytes.length > i ? selectedBytes[i] : null;
+
                       return GestureDetector(
-                        // ── TAP = toggle precious ──
                         onTap: () => _togglePrecious(i),
                         child: Stack(
                           fit: StackFit.expand,
                           children: [
-                            // Photo
-                            Image.file(File(selectedImages[i].path),
-                                fit: BoxFit.cover),
-
-                            // Precious overlay — gold tint + heart
+                            // Always use bytes-based image (works on web + native)
+                            bytes != null
+                                ? Image.memory(bytes, fit: BoxFit.cover)
+                                : Container(color: kSurface,
+                                    child: const Icon(Icons.image, color: kMuted)),
                             if (isPrecious)
                               Container(
                                 decoration: BoxDecoration(
@@ -1441,8 +1741,6 @@ class _UploadScreenState extends State<UploadScreen> {
                                   color: kGold.withValues(alpha: 0.15),
                                 ),
                               ),
-
-                            // Heart icon (bottom-left)
                             Positioned(
                               bottom: 6, left: 6,
                               child: AnimatedSwitcher(
@@ -1451,16 +1749,12 @@ class _UploadScreenState extends State<UploadScreen> {
                                     ? const Icon(Icons.favorite,
                                         key: ValueKey('on'),
                                         color: kGold, size: 20,
-                                        shadows: [Shadow(
-                                          color: Colors.black,
-                                          blurRadius: 4)])
+                                        shadows: [Shadow(color: Colors.black, blurRadius: 4)])
                                     : const Icon(Icons.favorite_border,
                                         key: ValueKey('off'),
                                         color: Colors.white54, size: 18),
                               ),
                             ),
-
-                            // PRECIOUS label (top-left)
                             if (isPrecious)
                               Positioned(
                                 top: 6, left: 6,
@@ -1474,34 +1768,27 @@ class _UploadScreenState extends State<UploadScreen> {
                                   child: const Text("PRECIOUS",
                                       style: TextStyle(
                                           color: kBg, fontSize: 7,
-                                          fontWeight: FontWeight.w800,
-                                          letterSpacing: 1)),
+                                          fontWeight: FontWeight.w800, letterSpacing: 1)),
                                 ),
                               ),
-
-                            // Remove button (top-right)
                             Positioned(
                               top: 4, right: 4,
                               child: GestureDetector(
                                 onTap: () => setState(() {
                                   selectedImages.removeAt(i);
-                                  // Re-map precious indexes after removal
+                                  if (i < selectedBytes.length) selectedBytes.removeAt(i);
                                   final updated = <int>{};
                                   for (final idx in _preciousIndexes) {
                                     if (idx < i) updated.add(idx);
                                     if (idx > i) updated.add(idx - 1);
                                   }
-                                  _preciousIndexes
-                                    ..clear()
-                                    ..addAll(updated);
+                                  _preciousIndexes..clear()..addAll(updated);
                                 }),
                                 child: Container(
                                   padding: const EdgeInsets.all(3),
                                   decoration: const BoxDecoration(
-                                      color: Colors.black54,
-                                      shape: BoxShape.circle),
-                                  child: const Icon(Icons.close,
-                                      color: kText, size: 14),
+                                      color: Colors.black54, shape: BoxShape.circle),
+                                  child: const Icon(Icons.close, color: kText, size: 14),
                                 ),
                               ),
                             ),
@@ -1511,8 +1798,6 @@ class _UploadScreenState extends State<UploadScreen> {
                     },
                   ),
           ),
-
-          // ── Bottom buttons ──
           Container(
             color: kSurface,
             padding: const EdgeInsets.all(16),
@@ -1534,6 +1819,7 @@ class _UploadScreenState extends State<UploadScreen> {
                             MaterialPageRoute(
                               builder: (_) => ProcessingScreen(
                                 images: selectedImages,
+                                imageBytes: List.from(selectedBytes),
                                 preciousIndexes: Set.from(_preciousIndexes),
                                 folderId: widget.folderId,
                               ),
@@ -1550,15 +1836,17 @@ class _UploadScreenState extends State<UploadScreen> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   5. PROCESSING SCREEN — analyze, caption, rank, precious-delete guard
+   5. PROCESSING SCREEN — bytes-based upload (works on web)
 ═══════════════════════════════════════════════════════════════════════ */
 class ProcessingScreen extends StatefulWidget {
   final List<XFile> images;
+  final List<Uint8List> imageBytes;
   final int? folderId;
   final Set<int> preciousIndexes;
   const ProcessingScreen({
     super.key,
     required this.images,
+    required this.imageBytes,
     this.folderId,
     this.preciousIndexes = const {},
   });
@@ -1579,7 +1867,6 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
 
   Future<void> _uploadImages() async {
     try {
-      // Build precious_indexes query param
       final preciousParam = widget.preciousIndexes.join(',');
 
       final uri = Uri.parse('${baseUrl()}/upload-images').replace(
@@ -1593,12 +1880,16 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
       request.headers['Authorization'] = 'Bearer ${AppSession.token ?? ""}';
 
       for (int i = 0; i < widget.images.length; i++) {
+        final bytes    = widget.imageBytes.length > i
+            ? widget.imageBytes[i]
+            : await widget.images[i].readAsBytes();
+        final filename = widget.images[i].name;
         request.files.add(
-            await http.MultipartFile.fromPath('files', widget.images[i].path));
+            http.MultipartFile.fromBytes('files', bytes, filename: filename));
       }
 
       final response = await request.send();
-      final body = jsonDecode(await response.stream.bytesToString());
+      final body     = jsonDecode(await response.stream.bytesToString());
       List<Map<String, dynamic>> sorted =
           List<Map<String, dynamic>>.from(body['results']);
       sorted.sort((a, b) => (b['score'] as num).compareTo(a['score'] as num));
@@ -1608,8 +1899,12 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
     }
   }
 
-  XFile _findImage(String filename) =>
-      widget.images.firstWhere((img) => img.name == filename);
+  // Find matching bytes by filename
+  Uint8List? _findBytes(String filename) {
+    final idx = widget.images.indexWhere((img) => img.name == filename);
+    if (idx < 0 || idx >= widget.imageBytes.length) return null;
+    return widget.imageBytes[idx];
+  }
 
   Color _scoreColor(double score) {
     if (score >= 70) return kGreen;
@@ -1618,12 +1913,12 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
   }
 
   Color _folderColor(String folderName) {
-    if (folderName.contains('Excellent'))                    return const Color(0xFF00E676);
-    if (folderName.contains('Great'))                        return kGreen;
+    if (folderName.contains('Excellent'))                     return const Color(0xFF00E676);
+    if (folderName.contains('Great'))                         return kGreen;
     if (folderName.contains('Good') && !folderName.contains('Below')) return kGold;
     if (folderName.contains('Average') && !folderName.contains('Below')) return const Color(0xFFFF9800);
-    if (folderName.contains('Below'))                        return const Color(0xFFFF5722);
-    if (folderName.contains('Poor'))                         return kRed;
+    if (folderName.contains('Below'))                         return const Color(0xFFFF5722);
+    if (folderName.contains('Poor'))                          return kRed;
     return kMuted;
   }
 
@@ -1659,13 +1954,11 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
     );
   }
 
-  /* ── Precious-aware delete ── */
   Future<void> _tryDelete(Map<String, dynamic> item) async {
     if (item['precious'] == true) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         backgroundColor: kCard,
-        content: Text("Precious photo — delete blocked. "
-            "Unmark precious first to delete.",
+        content: Text("Precious photo — delete blocked. Unmark precious first to delete.",
             style: TextStyle(color: kGold, fontSize: 11)),
       ));
       return;
@@ -1680,8 +1973,7 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
       setState(() => results.removeWhere((r) => r['id'] == id));
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         backgroundColor: kCard,
-        content: Text("Photo deleted.",
-            style: TextStyle(color: kRed, fontSize: 11)),
+        content: Text("Photo deleted.", style: TextStyle(color: kRed, fontSize: 11)),
       ));
     }
   }
@@ -1697,12 +1989,10 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
         actions: [
           if (results.isNotEmpty)
             IconButton(
-              icon: Icon(
-                  _showBreakdown ? Icons.bar_chart : Icons.bar_chart_outlined,
+              icon: Icon(_showBreakdown ? Icons.bar_chart : Icons.bar_chart_outlined,
                   color: kGold),
               tooltip: "Toggle score breakdown",
-              onPressed: () =>
-                  setState(() => _showBreakdown = !_showBreakdown),
+              onPressed: () => setState(() => _showBreakdown = !_showBreakdown),
             ),
         ],
       ),
@@ -1714,8 +2004,7 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                   const Icon(Icons.error_outline, color: kRed, size: 48),
                   const SizedBox(height: 16),
                   const Text("CONNECTION FAILED",
-                      style:
-                          TextStyle(color: kText, fontSize: 13, letterSpacing: 2)),
+                      style: TextStyle(color: kText, fontSize: 13, letterSpacing: 2)),
                   const SizedBox(height: 8),
                   const Text("Is the backend running on port 8000?",
                       style: TextStyle(color: kMuted, fontSize: 11)),
@@ -1731,8 +2020,7 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                         width: 48, height: 48,
                         child: CircularProgressIndicator(
                             color: kGold, strokeWidth: 2,
-                            backgroundColor:
-                                kGold.withValues(alpha: 0.1)),
+                            backgroundColor: kGold.withValues(alpha: 0.1)),
                       ),
                       const SizedBox(height: 24),
                       const Text("ANALYZING PHOTOS",
@@ -1741,18 +2029,15 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                       const SizedBox(height: 8),
                       const Text(
                           "Scoring sharpness, brightness, faces + AI captions...",
-                          style:
-                              TextStyle(color: kMuted, fontSize: 11)),
+                          style: TextStyle(color: kMuted, fontSize: 11)),
                     ],
                   ),
                 )
               : Column(
                   children: [
-                    // ── Summary bar ──
                     Container(
                       color: kSurface,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 12),
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                       child: Row(
                         children: [
                           const Icon(Icons.photo, color: kGold, size: 14),
@@ -1778,21 +2063,16 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                       ),
                     ),
                     const Divider(color: kBorder, height: 1),
-
-                    // ── Results list ──
                     Expanded(
                       child: ListView.separated(
                         padding: const EdgeInsets.all(16),
                         itemCount: results.length,
-                        separatorBuilder: (_, __) =>
-                            const SizedBox(height: 10),
+                        separatorBuilder: (_, __) => const SizedBox(height: 10),
                         itemBuilder: (_, index) {
-                          final item  = results[index];
-                          final img   = _findImage(item['filename']);
-                          final score = (item['score'] as num).toDouble();
-                          final bd    = (item['breakdown']
-                                  as Map<String, dynamic>?) ??
-                              {};
+                          final item       = results[index];
+                          final bytes      = _findBytes(item['filename']);
+                          final score      = (item['score'] as num).toDouble();
+                          final bd         = (item['breakdown'] as Map<String, dynamic>?) ?? {};
                           final isPrecious = item['precious'] == true;
                           final showDelete = item['show_delete'] == true;
 
@@ -1802,19 +2082,16 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                               borderRadius: BorderRadius.circular(4),
                               border: Border.all(
                                   color: index == 0
-                                      ? kGold.withValues(alpha: 0.5)
-                                      : kBorder),
+                                      ? kGold.withValues(alpha: 0.5) : kBorder),
                             ),
                             child: Column(
                               children: [
                                 Row(
                                   children: [
-                                    // ── Rank badge ──
                                     Container(
                                       width: 44,
                                       alignment: Alignment.center,
-                                      padding: const EdgeInsets.symmetric(
-                                          vertical: 8),
+                                      padding: const EdgeInsets.symmetric(vertical: 8),
                                       decoration: BoxDecoration(
                                         color: index == 0 ? kGold : kSurface,
                                         borderRadius: const BorderRadius.only(
@@ -1824,27 +2101,24 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                       ),
                                       child: Text("#${index + 1}",
                                           style: TextStyle(
-                                              color: index == 0
-                                                  ? kBg : kMuted,
+                                              color: index == 0 ? kBg : kMuted,
                                               fontWeight: FontWeight.w800,
                                               fontSize: 13)),
                                     ),
-                                    // ── Thumbnail ──
-                                    ClipRRect(
-                                      child: Image.file(
-                                          File(img.path),
-                                          width: 70,
-                                          height: 70,
-                                          fit: BoxFit.cover),
-                                    ),
+                                    // Use bytes for image display (works on web)
+                                    bytes != null
+                                        ? Image.memory(bytes,
+                                            width: 70, height: 70, fit: BoxFit.cover)
+                                        : Container(
+                                            width: 70, height: 70,
+                                            color: kSurface,
+                                            child: const Icon(Icons.image,
+                                                color: kMuted, size: 28)),
                                     const SizedBox(width: 14),
-                                    // ── Info ──
                                     Expanded(
                                       child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
+                                        crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
-                                          // Filename + precious icon
                                           Row(children: [
                                             if (isPrecious)
                                               const Padding(
@@ -1860,8 +2134,6 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                                   overflow: TextOverflow.ellipsis),
                                             ),
                                           ]),
-
-                                          // ── AI Caption — prominent ──
                                           if ((item['caption'] ?? '').isNotEmpty) ...[
                                             const SizedBox(height: 5),
                                             Container(
@@ -1880,8 +2152,7 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                                 Expanded(
                                                   child: Text(item['caption'],
                                                       style: const TextStyle(
-                                                          color: kText,
-                                                          fontSize: 10,
+                                                          color: kText, fontSize: 10,
                                                           fontStyle: FontStyle.italic),
                                                       overflow: TextOverflow.ellipsis,
                                                       maxLines: 2),
@@ -1889,15 +2160,12 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                               ]),
                                             ),
                                           ],
-
-                                          // ── Folder chip — tappable ──
                                           if ((item['folder'] ?? '').isNotEmpty) ...[
                                             const SizedBox(height: 5),
                                             GestureDetector(
                                               onTap: () {
-                                                // Navigate to folder on home screen
-                                                Navigator.popUntil(context,
-                                                    (r) => r.isFirst);
+                                                Navigator.popUntil(
+                                                    context, (r) => r.isFirst);
                                               },
                                               child: Container(
                                                 padding: const EdgeInsets.symmetric(
@@ -1937,7 +2205,6 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                             ),
                                           ],
                                           const SizedBox(height: 5),
-                                          // Score badge
                                           Row(
                                             children: [
                                               Container(
@@ -1946,8 +2213,7 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                                 decoration: BoxDecoration(
                                                   color: _scoreColor(score)
                                                       .withValues(alpha: 0.15),
-                                                  borderRadius:
-                                                      BorderRadius.circular(2),
+                                                  borderRadius: BorderRadius.circular(2),
                                                   border: Border.all(
                                                       color: _scoreColor(score)
                                                           .withValues(alpha: 0.4)),
@@ -1982,23 +2248,19 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                         ],
                                       ),
                                     ),
-                                    // ── Action buttons ──
                                     Column(
                                       children: [
-                                        // FIX button
                                         Padding(
-                                          padding: const EdgeInsets.fromLTRB(
-                                              6, 10, 10, 4),
+                                          padding: const EdgeInsets.fromLTRB(6, 10, 10, 4),
                                           child: GestureDetector(
                                             onTap: () => Navigator.push(
                                               context,
                                               MaterialPageRoute(
                                                 builder: (_) => EnhancingScreen(
-                                                  img: img,
-                                                  enhanceUrl:
-                                                      '${baseUrl()}/enhance-image',
-                                                  analyzeUrl:
-                                                      '${baseUrl()}/analyze-image',
+                                                  imageBytes: bytes,
+                                                  filename: item['filename'],
+                                                  enhanceUrl: '${baseUrl()}/enhance-image',
+                                                  analyzeUrl: '${baseUrl()}/analyze-image',
                                                 ),
                                               ),
                                             ),
@@ -2022,11 +2284,9 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                             ),
                                           ),
                                         ),
-                                        // ── DELETE icon (score < 65, not precious) ──
                                         if (showDelete)
                                           Padding(
-                                            padding: const EdgeInsets.fromLTRB(
-                                                6, 0, 10, 6),
+                                            padding: const EdgeInsets.fromLTRB(6, 0, 10, 6),
                                             child: GestureDetector(
                                               onTap: () => _tryDelete(item),
                                               child: Container(
@@ -2034,10 +2294,8 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                                     horizontal: 10, vertical: 7),
                                                 decoration: BoxDecoration(
                                                   border: Border.all(
-                                                      color: kRed
-                                                          .withValues(alpha: 0.6)),
-                                                  borderRadius:
-                                                      BorderRadius.circular(3),
+                                                      color: kRed.withValues(alpha: 0.6)),
+                                                  borderRadius: BorderRadius.circular(3),
                                                 ),
                                                 child: const Column(children: [
                                                   Icon(Icons.delete_outline,
@@ -2047,8 +2305,7 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                                       style: TextStyle(
                                                           color: kRed, fontSize: 9,
                                                           letterSpacing: 1.5,
-                                                          fontWeight:
-                                                              FontWeight.w700)),
+                                                          fontWeight: FontWeight.w700)),
                                                 ]),
                                               ),
                                             ),
@@ -2059,8 +2316,7 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                 ),
                                 if (_showBreakdown && bd.isNotEmpty)
                                   Padding(
-                                    padding: const EdgeInsets.fromLTRB(
-                                        44 + 70.0 + 14, 0, 0, 4),
+                                    padding: const EdgeInsets.fromLTRB(44 + 70.0 + 14, 0, 0, 4),
                                     child: _breakdownWidget(bd),
                                   ),
                               ],
@@ -2076,15 +2332,17 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   ENHANCING SCREEN  — unchanged logic, auth header added
+   6. ENHANCING SCREEN — bytes-based (works on web)
 ═══════════════════════════════════════════════════════════════════════ */
 class EnhancingScreen extends StatefulWidget {
-  final XFile img;
+  final Uint8List? imageBytes;
+  final String filename;
   final String enhanceUrl;
   final String analyzeUrl;
   const EnhancingScreen({
     super.key,
-    required this.img,
+    required this.imageBytes,
+    required this.filename,
     required this.enhanceUrl,
     required this.analyzeUrl,
   });
@@ -2110,11 +2368,12 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
 
   Future<void> enhance() async {
     try {
-      final bytes = await File(widget.img.path).readAsBytes();
+      final bytes = widget.imageBytes;
+      if (bytes == null) throw Exception('No image data');
       var request = http.MultipartRequest('POST', Uri.parse(widget.enhanceUrl));
       request.headers['Authorization'] = 'Bearer ${AppSession.token ?? ""}';
       request.files.add(http.MultipartFile.fromBytes('file', bytes,
-          filename: widget.img.name));
+          filename: widget.filename));
       final response =
           await request.send().timeout(const Duration(seconds: 45));
       final body = jsonDecode(await response.stream.bytesToString());
@@ -2122,8 +2381,7 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
       if (mounted) {
         setState(() {
           enhancedBytes = base64Decode(body['enhanced'] as String);
-          method = body['method'] == 'ai'
-              ? 'AI ENHANCED — GROQ' : 'ENHANCED — OPENCV';
+          method = body['method'] == 'ai' ? 'AI ENHANCED — GROQ' : 'ENHANCED — OPENCV';
         });
       }
     } catch (e) {
@@ -2136,17 +2394,18 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
 
   Future<void> analyzeWithGroq() async {
     try {
-      final bytes = await File(widget.img.path).readAsBytes();
+      final bytes = widget.imageBytes;
+      if (bytes == null) throw Exception('No image data');
       var request = http.MultipartRequest('POST', Uri.parse(widget.analyzeUrl));
       request.headers['Authorization'] = 'Bearer ${AppSession.token ?? ""}';
       request.files.add(http.MultipartFile.fromBytes('file', bytes,
-          filename: widget.img.name));
+          filename: widget.filename));
       final response =
           await request.send().timeout(const Duration(seconds: 45));
       final body = jsonDecode(await response.stream.bytesToString());
       if (mounted) {
         setState(() {
-          analysis = body['analysis'];
+          analysis       = body['analysis'];
           loadingAnalysis = false;
         });
       }
@@ -2161,17 +2420,14 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
     try {
       final filename =
           'hackx_enhanced_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+      if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
         final savePath = await FilePicker.platform.saveFile(
           dialogTitle: 'Save Enhanced Image',
           fileName: filename,
           type: FileType.image,
           allowedExtensions: ['jpg'],
         );
-        if (savePath == null) {
-          if (mounted) setState(() => _saving = false);
-          return;
-        }
+        if (savePath == null) { if (mounted) setState(() => _saving = false); return; }
         await File(savePath).writeAsBytes(enhancedBytes!);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -2180,7 +2436,7 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
                 style: const TextStyle(color: kGold, fontSize: 11)),
           ));
         }
-      } else {
+      } else if (!kIsWeb) {
         final savePath = Platform.isAndroid
             ? '/storage/emulated/0/Download/$filename'
             : '${Directory.systemTemp.path}/$filename';
@@ -2193,6 +2449,7 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
           ));
         }
       }
+      // Web: saving to filesystem not supported — user can long-press image
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -2221,8 +2478,7 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
                   const SizedBox(width: 8),
                   Expanded(
                       child: Text(item.toString(),
-                          style: const TextStyle(
-                              color: kText, fontSize: 12))),
+                          style: const TextStyle(color: kText, fontSize: 12))),
                 ],
               ),
             )),
@@ -2259,8 +2515,7 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
             const Icon(Icons.error_outline, color: kRed, size: 24),
             const SizedBox(height: 6),
             const Text("ENHANCEMENT FAILED",
-                style: TextStyle(
-                    color: kRed, fontSize: 10, letterSpacing: 1.5)),
+                style: TextStyle(color: kRed, fontSize: 10, letterSpacing: 1.5)),
             const SizedBox(height: 4),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -2283,12 +2538,18 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
     );
   }
 
+  Widget _origWidget() {
+    final bytes = widget.imageBytes;
+    if (bytes != null) {
+      return Image.memory(bytes, fit: BoxFit.contain, width: double.infinity);
+    }
+    return Container(height: 200, color: kSurface,
+        child: const Center(child: Icon(Icons.image, color: kMuted, size: 48)));
+  }
+
   Widget _buildSideBySide() {
-    Widget origImg = Image.file(File(widget.img.path),
-        fit: BoxFit.contain, width: double.infinity);
     Widget enhImg = enhancedBytes != null
-        ? Image.memory(enhancedBytes!,
-            fit: BoxFit.contain, width: double.infinity)
+        ? Image.memory(enhancedBytes!, fit: BoxFit.contain, width: double.infinity)
         : SizedBox(height: 140, child: _loadingOrError());
 
     return Container(
@@ -2306,20 +2567,17 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
                 Expanded(
                   child: Stack(children: [
                     ClipRRect(
-                        borderRadius: const BorderRadius.only(
-                            topLeft: Radius.circular(4)),
-                        child: origImg),
+                        borderRadius: const BorderRadius.only(topLeft: Radius.circular(4)),
+                        child: _origWidget()),
                     Positioned(
                       top: 6, left: 6,
                       child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 6, vertical: 2),
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
                             color: Colors.black.withValues(alpha: 0.65),
                             borderRadius: BorderRadius.circular(2)),
                         child: const Text("ORIGINAL",
-                            style: TextStyle(
-                                color: kMuted, fontSize: 8, letterSpacing: 1.5)),
+                            style: TextStyle(color: kMuted, fontSize: 8, letterSpacing: 1.5)),
                       ),
                     ),
                   ]),
@@ -2328,20 +2586,17 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
                 Expanded(
                   child: Stack(children: [
                     ClipRRect(
-                        borderRadius: const BorderRadius.only(
-                            topRight: Radius.circular(4)),
+                        borderRadius: const BorderRadius.only(topRight: Radius.circular(4)),
                         child: enhImg),
                     Positioned(
                       top: 6, right: 6,
                       child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 6, vertical: 2),
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
                             color: Colors.black.withValues(alpha: 0.65),
                             borderRadius: BorderRadius.circular(2)),
                         child: const Text("ENHANCED",
-                            style: TextStyle(
-                                color: kGold, fontSize: 8, letterSpacing: 1.5)),
+                            style: TextStyle(color: kGold, fontSize: 8, letterSpacing: 1.5)),
                       ),
                     ),
                   ]),
@@ -2355,13 +2610,11 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
               decoration: BoxDecoration(
                 color: kGold.withValues(alpha: 0.07),
                 borderRadius: const BorderRadius.only(
-                    bottomLeft: Radius.circular(4),
-                    bottomRight: Radius.circular(4)),
+                    bottomLeft: Radius.circular(4), bottomRight: Radius.circular(4)),
               ),
               child: Center(
                 child: Text(method,
-                    style: const TextStyle(
-                        color: kGold, fontSize: 9, letterSpacing: 1.5)),
+                    style: const TextStyle(color: kGold, fontSize: 9, letterSpacing: 1.5)),
               ),
             ),
         ],
@@ -2375,8 +2628,7 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
       children: [
         const SectionLabel("ORIGINAL"),
         const SizedBox(height: 8),
-        _imgBox(Image.file(File(widget.img.path),
-            width: double.infinity, fit: BoxFit.contain)),
+        _imgBox(_origWidget()),
         const SizedBox(height: 20),
         Row(children: [
           const SectionLabel("ENHANCED"),
@@ -2386,19 +2638,16 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
                 color: kGold.withValues(alpha: 0.1),
-                border:
-                    Border.all(color: kGold.withValues(alpha: 0.3)),
+                border: Border.all(color: kGold.withValues(alpha: 0.3)),
                 borderRadius: BorderRadius.circular(3),
               ),
               child: Text(method,
-                  style: const TextStyle(
-                      color: kGold, fontSize: 9, letterSpacing: 1.5)),
+                  style: const TextStyle(color: kGold, fontSize: 9, letterSpacing: 1.5)),
             ),
         ]),
         const SizedBox(height: 8),
         enhancedBytes != null
-            ? _imgBox(Image.memory(enhancedBytes!,
-                width: double.infinity, fit: BoxFit.contain))
+            ? _imgBox(Image.memory(enhancedBytes!, width: double.infinity, fit: BoxFit.contain))
             : _loadingOrError(),
       ],
     );
@@ -2411,21 +2660,18 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
-            border: Border.all(color: kBorder),
-            borderRadius: BorderRadius.circular(3)),
+            border: Border.all(color: kBorder), borderRadius: BorderRadius.circular(3)),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              _viewMode == 'side'
-                  ? Icons.view_agenda_outlined : Icons.compare,
+              _viewMode == 'side' ? Icons.view_agenda_outlined : Icons.compare,
               color: kMuted, size: 12,
             ),
             const SizedBox(width: 5),
             Text(
               _viewMode == 'side' ? "FULL VIEW" : "SIDE BY SIDE",
-              style: const TextStyle(
-                  color: kMuted, fontSize: 9, letterSpacing: 1.5),
+              style: const TextStyle(color: kMuted, fontSize: 9, letterSpacing: 1.5),
             ),
           ],
         ),
@@ -2443,8 +2689,7 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
           actions: [
             IconButton(
               icon: Icon(
-                _viewMode == 'side'
-                    ? Icons.view_agenda_outlined : Icons.compare,
+                _viewMode == 'side' ? Icons.view_agenda_outlined : Icons.compare,
                 color: kGold,
               ),
               tooltip: _viewMode == 'side' ? "Full view" : "Side by side",
@@ -2471,15 +2716,13 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(children: [
-              SectionLabel(
-                  _viewMode == 'side' ? "COMPARE" : "FULL VIEW"),
+              SectionLabel(_viewMode == 'side' ? "COMPARE" : "FULL VIEW"),
               const Spacer(),
               _viewToggle(),
             ]),
             const SizedBox(height: 10),
             _viewMode == 'side' ? _buildSideBySide() : _buildFullStacked(),
             const SizedBox(height: 20),
-            // ── Groq analysis card ──
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(16),
@@ -2511,20 +2754,17 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
                               Text("GROQ AI ANALYSIS",
                                   style: TextStyle(
                                       color: kGold, fontSize: 11,
-                                      letterSpacing: 2,
-                                      fontWeight: FontWeight.w700)),
+                                      letterSpacing: 2, fontWeight: FontWeight.w700)),
                             ]),
                             const SizedBox(height: 12),
                             Text(analysis!['overall'] ?? '',
-                                style: const TextStyle(
-                                    color: kText, fontSize: 13)),
+                                style: const TextStyle(color: kText, fontSize: 13)),
                             const SizedBox(height: 14),
                             if ((analysis!['strengths'] as List).isNotEmpty)
-                              ..._buildList("STRENGTHS",
-                                  analysis!['strengths'], kGreen),
-                            if ((analysis!['issues'] as List).isNotEmpty)
                               ..._buildList(
-                                  "ISSUES", analysis!['issues'], kRed),
+                                  "STRENGTHS", analysis!['strengths'], kGreen),
+                            if ((analysis!['issues'] as List).isNotEmpty)
+                              ..._buildList("ISSUES", analysis!['issues'], kRed),
                             if (analysis!['tip'] != null) ...[
                               const SizedBox(height: 4),
                               Container(
