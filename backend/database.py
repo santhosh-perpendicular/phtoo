@@ -6,14 +6,20 @@ import sqlite3
 import hashlib
 import os
 from datetime import datetime
+
 DB_PATH = os.getenv("DB_PATH", "hackx.db")
+
 def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=30000;")
     return conn
+
 def init_db():
     conn = get_conn()
     c = conn.cursor()
+
     # ── users ──────────────────────────────────────────────────────────
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -24,6 +30,7 @@ def init_db():
             created_at  TEXT    DEFAULT (datetime('now'))
         )
     """)
+
     # ── folders ────────────────────────────────────────────────────────
     c.execute("""
         CREATE TABLE IF NOT EXISTS folders (
@@ -35,6 +42,7 @@ def init_db():
             UNIQUE(user_id, name)
         )
     """)
+
     # ── photos ─────────────────────────────────────────────────────────
     c.execute("""
         CREATE TABLE IF NOT EXISTS photos (
@@ -52,20 +60,26 @@ def init_db():
             FOREIGN KEY (folder_id) REFERENCES folders(id)
         )
     """)
+
     # ── MIGRATIONS ─────────────────────────────────────────────────────
     existing_cols = [row[1] for row in c.execute("PRAGMA table_info(photos)").fetchall()]
     if 'filepath' not in existing_cols:
         c.execute("ALTER TABLE photos ADD COLUMN filepath TEXT DEFAULT ''")
+
     user_cols = [row[1] for row in c.execute("PRAGMA table_info(users)").fetchall()]
     if 'email' not in user_cols:
         c.execute("ALTER TABLE users ADD COLUMN email TEXT")
+
     # Seed default admin user (password: admin)
     _seed_user(c, "admin", "admin@hackx.app", "admin")
     conn.commit()
     conn.close()
+
+
 # ── helpers ───────────────────────────────────────────────────────────
 def _hash(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
+
 def _seed_user(cursor, username: str, email: str, password: str):
     try:
         cursor.execute(
@@ -74,6 +88,8 @@ def _seed_user(cursor, username: str, email: str, password: str):
         )
     except sqlite3.IntegrityError:
         pass
+
+
 # ── AUTH ──────────────────────────────────────────────────────────────
 def authenticate(username: str, password: str) -> dict | None:
     conn = get_conn()
@@ -85,10 +101,10 @@ def authenticate(username: str, password: str) -> dict | None:
     if row:
         return {"id": row["id"], "username": row["username"], "email": row["email"]}
     return None
+
 def create_user(username: str, password: str, email: str | None = None) -> dict | None:
     conn = get_conn()
     try:
-        # Extra guard: reject if email already exists (any username)
         if email:
             existing = conn.execute(
                 "SELECT id FROM users WHERE email = ?", (email.lower().strip(),)
@@ -109,6 +125,7 @@ def create_user(username: str, password: str, email: str | None = None) -> dict 
     except sqlite3.IntegrityError:
         conn.close()
         return None
+
 def get_user_by_email(email: str) -> dict | None:
     conn = get_conn()
     row = conn.execute(
@@ -116,6 +133,7 @@ def get_user_by_email(email: str) -> dict | None:
     ).fetchone()
     conn.close()
     return dict(row) if row else None
+
 def update_user_email(user_id: int, email: str) -> bool:
     conn = get_conn()
     try:
@@ -128,6 +146,7 @@ def update_user_email(user_id: int, email: str) -> bool:
     except sqlite3.IntegrityError:
         conn.close()
         return False
+
 def email_exists(email: str) -> bool:
     """Return True if the email is already registered to ANY username."""
     conn = get_conn()
@@ -136,6 +155,23 @@ def email_exists(email: str) -> bool:
     ).fetchone()
     conn.close()
     return row is not None
+
+def reset_user_password(email: str, new_password: str) -> bool:
+    """Reset a user's password by email. Returns True if successful."""
+    conn = get_conn()
+    try:
+        cur = conn.execute(
+            "UPDATE users SET password = ? WHERE email = ?",
+            (_hash(new_password), email.lower().strip())
+        )
+        conn.commit()
+        conn.close()
+        return cur.rowcount > 0
+    except Exception:
+        conn.close()
+        return False
+
+
 # ── FOLDERS ───────────────────────────────────────────────────────────
 def get_folders(user_id: int) -> list[dict]:
     conn = get_conn()
@@ -144,6 +180,7 @@ def get_folders(user_id: int) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
 def create_folder(user_id: int, name: str) -> dict | None:
     conn = get_conn()
     try:
@@ -159,6 +196,7 @@ def create_folder(user_id: int, name: str) -> dict | None:
     except sqlite3.IntegrityError:
         conn.close()
         return None
+
 def delete_folder(folder_id: int, user_id: int) -> bool:
     conn = get_conn()
     conn.execute(
@@ -170,6 +208,8 @@ def delete_folder(folder_id: int, user_id: int) -> bool:
     conn.commit()
     conn.close()
     return cur.rowcount > 0
+
+
 # ── PHOTOS ────────────────────────────────────────────────────────────
 def save_photo(user_id: int, folder_id: int | None, filename: str,
                score: float, caption: str, is_precious: bool,
@@ -186,6 +226,7 @@ def save_photo(user_id: int, folder_id: int | None, filename: str,
     photo_id = cur.lastrowid
     conn.close()
     return photo_id
+
 def get_photos(user_id: int, folder_id: int | None = None) -> list[dict]:
     conn = get_conn()
     if folder_id is not None:
@@ -199,6 +240,7 @@ def get_photos(user_id: int, folder_id: int | None = None) -> list[dict]:
         ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
 def delete_photo(photo_id: int, user_id: int) -> bool:
     conn = get_conn()
     cur = conn.execute(
@@ -207,6 +249,7 @@ def delete_photo(photo_id: int, user_id: int) -> bool:
     conn.commit()
     conn.close()
     return cur.rowcount > 0
+
 def get_photo(photo_id: int, user_id: int) -> dict | None:
     conn = get_conn()
     row = conn.execute(
@@ -214,6 +257,7 @@ def get_photo(photo_id: int, user_id: int) -> dict | None:
     ).fetchone()
     conn.close()
     return dict(row) if row else None
+
 def set_precious(photo_id: int, user_id: int, precious: bool) -> bool:
     conn = get_conn()
     cur = conn.execute(
@@ -223,6 +267,7 @@ def set_precious(photo_id: int, user_id: int, precious: bool) -> bool:
     conn.commit()
     conn.close()
     return cur.rowcount > 0
+
 def move_photo(photo_id: int, user_id: int, folder_id: int | None) -> bool:
     conn = get_conn()
     cur = conn.execute(

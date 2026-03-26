@@ -220,35 +220,57 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  // ── Tab: 0=login/register  1=OTP ──
-  int _tab = 0;
+  // ── Main mode: true = register page, false = login page ──
+  bool _isRegister = false;
 
-  // ── Username/Password ──
+  // ── Tab within each page: 0 = PASSWORD, 1 = OTP EMAIL ──
+  int _loginTab    = 1; // Login: default OTP tab
+  int _registerTab = 0; // Register: default PASSWORD tab
+
+  // ── Shared fields ──
   final _userCtrl  = TextEditingController();
   final _passCtrl  = TextEditingController();
   final _emailCtrl = TextEditingController();
-  bool _obscure = true;
-  bool _loading = false;
+  bool _obscure    = true;
+  bool _loading    = false;
   bool _googleLoading = false;
-  bool _isRegister = false;
-  bool _showRegisterHint = false;
   String? _error;
+  bool _showRegisterHint   = false;
+  bool _alreadyRegistered  = false;
 
-  // ── Registration OTP ──
-  // Step 0 = fill form, Step 1 = enter OTP
-  int _regStep = 0;
-  final _regOtpCtrl = TextEditingController();
-  bool _regOtpLoading = false;
+  // ── Registration via PASSWORD tab OTP ──
+  int  _regStep        = 0; // 0=form, 1=enter otp
+  final _regOtpCtrl    = TextEditingController();
+  bool _regOtpLoading  = false;
   String? _regOtpError;
   String? _regOtpSuccess;
+
+  // ── Registration via OTP EMAIL tab (new correct flow) ──
+  // Step 0: enter email, Step 1: enter OTP
+  int  _regOtpEmailStep     = 0;
+  final _regOtpEmailCtrl    = TextEditingController(); // email field
+  final _regOtpEmailCodeCtrl = TextEditingController(); // code field
+  bool _regOtpEmailLoading  = false;
+  String? _regOtpEmailError;
+  String? _regOtpEmailSuccess;
 
   // ── Login OTP ──
   final _otpEmailCtrl = TextEditingController();
   final _otpCodeCtrl  = TextEditingController();
   bool _otpSent       = false;
   bool _otpLoading    = false;
+  bool _isForgotPassword = false;
   String? _otpError;
   String? _otpSuccess;
+
+  // ── Reset Password (after OTP verified) ──
+  bool _resetStep = false;
+  final _newPassCtrl       = TextEditingController();
+  final _confirmPassCtrl   = TextEditingController();
+  bool _newPassObscure     = true;
+  bool _confirmPassObscure = true;
+  String? _resetError;
+  String? _resetSuccess;
 
   /* ── Username/Password login ── */
   Future<void> _submitLogin() async {
@@ -279,7 +301,7 @@ class _LoginScreenState extends State<LoginScreen> {
               context, MaterialPageRoute(builder: (_) => const HomeScreen()));
         }
       } else {
-        final body = jsonDecode(resp.body);
+        final body   = jsonDecode(resp.body);
         final detail = body['detail'] ?? 'Something went wrong.';
         if (resp.statusCode == 404) {
           setState(() { _error = detail; _showRegisterHint = true; });
@@ -297,7 +319,7 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  /* ── Step 1: Send registration OTP ── */
+  /* ── PASSWORD tab register: Step 1 — Send OTP ── */
   Future<void> _sendRegOtp() async {
     final user  = _userCtrl.text.trim();
     final pass  = _passCtrl.text;
@@ -320,7 +342,7 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    setState(() { _loading = true; _error = null; _regOtpError = null; });
+    setState(() { _loading = true; _error = null; _regOtpError = null; _alreadyRegistered = false; });
     try {
       final resp = await http.post(
         Uri.parse('${baseUrl()}/auth/register/send-otp'),
@@ -331,21 +353,27 @@ class _LoginScreenState extends State<LoginScreen> {
       final body = jsonDecode(resp.body);
       if (resp.statusCode == 200) {
         setState(() {
-          _regStep      = 1;
-          _regOtpSuccess = 'OTP sent to $email — check your inbox.';
+          _regStep       = 1;
+          _regOtpSuccess = 'Verification code sent to $email — check your inbox.';
           _regOtpError   = null;
         });
       } else {
-        setState(() => _error = body['detail'] ?? 'Failed to send OTP.');
+        final detail        = body['detail'] ?? 'Failed to send OTP.';
+        final isAlreadyReg  = resp.statusCode == 409 &&
+            detail.toLowerCase().contains('already registered');
+        setState(() {
+          _error = detail;
+          _alreadyRegistered = isAlreadyReg;
+        });
       }
     } catch (e) {
-      setState(() => _error = 'Cannot reach server. Is the backend running?');
+      setState(() { _error = 'Cannot reach server. Is the backend running?'; _alreadyRegistered = false; });
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  /* ── Step 2: Verify registration OTP and create account ── */
+  /* ── PASSWORD tab register: Step 2 — Verify OTP ── */
   Future<void> _verifyRegOtp() async {
     final email = _emailCtrl.text.trim().toLowerCase();
     final code  = _regOtpCtrl.text.trim();
@@ -379,6 +407,96 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  /* ── OTP EMAIL tab register: Step 0 — Send OTP to email ── */
+  Future<void> _sendRegOtpEmail() async {
+    final email = _regOtpEmailCtrl.text.trim().toLowerCase();
+    if (email.isEmpty || !email.contains('@')) {
+      setState(() { _regOtpEmailError = 'Enter a valid email address.'; _regOtpEmailSuccess = null; });
+      return;
+    }
+    setState(() { _regOtpEmailLoading = true; _regOtpEmailError = null; _regOtpEmailSuccess = null; });
+    try {
+      // We send to the registration OTP endpoint.
+      // username = email (temp), password = random — user sets username after via UsernameSetupScreen.
+      final resp = await http.post(
+        Uri.parse('${baseUrl()}/auth/register/send-otp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'username': email, // temp username = email; user will set real one after
+          'password': _generateTempPassword(),
+          'email':    email,
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      final body = jsonDecode(resp.body);
+      if (resp.statusCode == 200) {
+        setState(() {
+          _regOtpEmailStep    = 1;
+          _regOtpEmailSuccess = 'A 6-digit code was sent to $email — check your inbox.';
+          _regOtpEmailError   = null;
+        });
+      } else {
+        final detail       = body['detail'] ?? 'Failed to send code.';
+        final isAlreadyReg = resp.statusCode == 409 &&
+            detail.toLowerCase().contains('already registered');
+        setState(() {
+          _regOtpEmailError = detail;
+          if (isAlreadyReg) {
+            _regOtpEmailError = '$detail\n\nHead to the Login page to sign in.';
+          }
+        });
+      }
+    } catch (e) {
+      setState(() => _regOtpEmailError = 'Cannot reach server. Is the backend running?');
+    } finally {
+      if (mounted) setState(() => _regOtpEmailLoading = false);
+    }
+  }
+
+  /* ── OTP EMAIL tab register: Step 1 — Verify OTP → create account → ask username ── */
+  Future<void> _verifyRegOtpEmail() async {
+    final email = _regOtpEmailCtrl.text.trim().toLowerCase();
+    final code  = _regOtpEmailCodeCtrl.text.trim();
+    if (code.length != 6) {
+      setState(() => _regOtpEmailError = 'Enter the 6-digit code from your email.');
+      return;
+    }
+    setState(() { _regOtpEmailLoading = true; _regOtpEmailError = null; });
+    try {
+      final resp = await http.post(
+        Uri.parse('${baseUrl()}/auth/register/verify-otp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'otp': code}),
+      ).timeout(const Duration(seconds: 10));
+
+      final body = jsonDecode(resp.body);
+      if (resp.statusCode == 200) {
+        AppSession.token = body['token'];
+        AppSession.user  = Map<String, dynamic>.from(body['user']);
+        if (mounted) {
+          // Route to UsernameSetupScreen with fromOtpEmail=true
+          // so it collects both username AND password
+          Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => const UsernameSetupScreen(fromOtpEmail: true)));
+        }
+      } else {
+        setState(() => _regOtpEmailError = body['detail'] ?? 'Invalid code.');
+      }
+    } catch (e) {
+      setState(() => _regOtpEmailError = 'Cannot reach server. Is the backend running?');
+    } finally {
+      if (mounted) setState(() => _regOtpEmailLoading = false);
+    }
+  }
+
+  String _generateTempPassword() {
+    // Random 16-char hex — user registered via OTP email doesn't use password login
+    final bytes = List.generate(8, (_) => DateTime.now().microsecondsSinceEpoch & 0xFF);
+    return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  }
+
   /* ── Google Sign-In — Web only ── */
   Future<void> _signInWithGoogle() async {
     if (!kIsWeb) return;
@@ -402,8 +520,13 @@ class _LoginScreenState extends State<LoginScreen> {
         AppSession.token = body['token'];
         AppSession.user  = Map<String, dynamic>.from(body['user']);
         if (mounted) {
+          final needsUsername = body['needs_username'] == true;
           Navigator.pushReplacement(
-              context, MaterialPageRoute(builder: (_) => const HomeScreen()));
+              context,
+              MaterialPageRoute(
+                  builder: (_) => needsUsername
+                      ? const UsernameSetupScreen()
+                      : const HomeScreen()));
         }
       } else {
         final body = jsonDecode(resp.body);
@@ -425,14 +548,23 @@ class _LoginScreenState extends State<LoginScreen> {
     }
     setState(() { _otpLoading = true; _otpError = null; _otpSuccess = null; });
     try {
+      final endpoint = _isForgotPassword
+          ? '${baseUrl()}/auth/send-reset-otp'
+          : '${baseUrl()}/auth/send-otp';
+
       final resp = await http.post(
-        Uri.parse('${baseUrl()}/auth/send-otp'),
+        Uri.parse(endpoint),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'email': email}),
       ).timeout(const Duration(seconds: 15));
       final body = jsonDecode(resp.body);
       if (resp.statusCode == 200) {
-        setState(() { _otpSent = true; _otpSuccess = 'OTP sent to $email — check your inbox.'; });
+        setState(() {
+          _otpSent = true;
+          _otpSuccess = _isForgotPassword
+              ? 'Password reset code sent to $email — check your inbox.'
+              : 'Login code sent to $email — check your inbox.';
+        });
       } else {
         setState(() => _otpError = body['detail'] ?? 'Failed to send OTP.');
       }
@@ -460,11 +592,25 @@ class _LoginScreenState extends State<LoginScreen> {
       ).timeout(const Duration(seconds: 10));
       final body = jsonDecode(resp.body);
       if (resp.statusCode == 200) {
+        if (_isForgotPassword) {
+          setState(() {
+            _otpLoading = false;
+            _resetStep  = true;
+            _otpSuccess = 'OTP verified! Enter your new password below.';
+            _otpError   = null;
+          });
+          return;
+        }
         AppSession.token = body['token'];
         AppSession.user  = Map<String, dynamic>.from(body['user']);
         if (mounted) {
+          final needsUsername = body['needs_username'] == true;
           Navigator.pushReplacement(
-              context, MaterialPageRoute(builder: (_) => const HomeScreen()));
+              context,
+              MaterialPageRoute(
+                  builder: (_) => needsUsername
+                      ? const UsernameSetupScreen()
+                      : const HomeScreen()));
         }
       } else {
         setState(() => _otpError = body['detail'] ?? 'Invalid OTP.');
@@ -474,6 +620,64 @@ class _LoginScreenState extends State<LoginScreen> {
     } finally {
       if (mounted) setState(() => _otpLoading = false);
     }
+  }
+
+  /* ── Reset Password ── */
+  Future<void> _resetPassword() async {
+    final newPass     = _newPassCtrl.text;
+    final confirmPass = _confirmPassCtrl.text;
+    final email       = _otpEmailCtrl.text.trim().toLowerCase();
+
+    if (newPass.isEmpty || newPass.length < 4) {
+      setState(() => _resetError = 'Password must be at least 4 characters.');
+      return;
+    }
+    if (newPass != confirmPass) {
+      setState(() => _resetError = 'Passwords do not match.');
+      return;
+    }
+
+    setState(() { _otpLoading = true; _resetError = null; });
+    try {
+      final resp = await http.post(
+        Uri.parse('${baseUrl()}/auth/reset-password'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'new_password': newPass}),
+      ).timeout(const Duration(seconds: 10));
+      final body = jsonDecode(resp.body);
+      if (resp.statusCode == 200) {
+        setState(() {
+          _resetSuccess     = 'Password reset! Please login with your new password.';
+          _resetStep        = false;
+          _isForgotPassword = false;
+          _otpSent          = false;
+          _otpCodeCtrl.clear();
+          _newPassCtrl.clear();
+          _confirmPassCtrl.clear();
+          _otpSuccess = null;
+          _otpError   = null;
+        });
+        Future.delayed(const Duration(seconds: 2), () {
+          if (mounted) setState(() => _loginTab = 0);
+        });
+      } else {
+        setState(() => _resetError = body['detail'] ?? 'Password reset failed.');
+      }
+    } catch (e) {
+      setState(() => _resetError = 'Cannot reach server. Is the backend running?');
+    } finally {
+      if (mounted) setState(() => _otpLoading = false);
+    }
+  }
+
+  /* ── Reset all register OTP email state ── */
+  void _resetRegOtpEmailState() {
+    _regOtpEmailStep = 0;
+    _regOtpEmailCtrl.clear();
+    _regOtpEmailCodeCtrl.clear();
+    _regOtpEmailError   = null;
+    _regOtpEmailSuccess = null;
+    _regOtpEmailLoading = false;
   }
 
   @override
@@ -519,18 +723,223 @@ class _LoginScreenState extends State<LoginScreen> {
 
                   // ── Tabs ──
                   Row(children: [
-                    _tabBtn("PASSWORD", 0, Icons.lock_outline),
+                    _tabBtn("PASSWORD", 0),
                     const SizedBox(width: 8),
-                    _tabBtn("OTP EMAIL", 1, Icons.email_outlined),
+                    _tabBtn("OTP EMAIL", 1),
                   ]),
                   const SizedBox(height: 24),
 
-                  // ══════════════════════════════════════════
-                  // TAB 0 — Username / Password + Register
-                  // ══════════════════════════════════════════
-                  if (_tab == 0) ...[
-                    // LOGIN
-                    if (!_isRegister) ...[
+                  // ══════════════════════════════════════════════════════
+                  // REGISTER PAGE
+                  // ══════════════════════════════════════════════════════
+                  if (_isRegister) ...[
+
+                    // ── REGISTER · PASSWORD TAB ──
+                    if (_registerTab == 0) ...[
+                      if (_regStep == 0) ...[
+                        const SectionLabel("REGISTER"),
+                        const SizedBox(height: 20),
+                        _buildField("USERNAME", _userCtrl, false),
+                        const SizedBox(height: 16),
+                        _buildField("EMAIL ADDRESS", _emailCtrl, false),
+                        const SizedBox(height: 16),
+                        _buildField("PASSWORD", _passCtrl, _obscure,
+                            suffix: IconButton(
+                              icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility,
+                                  color: kMuted, size: 18),
+                              onPressed: () => setState(() => _obscure = !_obscure),
+                            )),
+                        const SizedBox(height: 8),
+                        _infoBox(
+                          "A verification code will be sent to your email to confirm your account.",
+                          Icons.info_outline, kGold,
+                        ),
+                        if (_error != null) ...[
+                          const SizedBox(height: 12),
+                          _errorBox(_error!,
+                              loginHint: _alreadyRegistered
+                                  ? () => setState(() {
+                                        _isRegister = false;
+                                        _error = null;
+                                        _alreadyRegistered = false;
+                                        _emailCtrl.clear();
+                                      })
+                                  : null),
+                        ],
+                        const SizedBox(height: 28),
+                        _loading
+                            ? const Center(child: CircularProgressIndicator(color: kGold))
+                            : GoldButton(
+                                label: "SEND VERIFICATION CODE",
+                                icon: Icons.send,
+                                onPressed: _sendRegOtp),
+                      ],
+
+                      if (_regStep == 1) ...[
+                        const SectionLabel("VERIFY EMAIL"),
+                        const SizedBox(height: 16),
+                        if (_regOtpSuccess != null)
+                          _successBox(_regOtpSuccess!, Icons.mark_email_read),
+                        const SizedBox(height: 4),
+                        _buildField("6-DIGIT VERIFICATION CODE", _regOtpCtrl, false),
+                        if (_regOtpError != null) ...[
+                          const SizedBox(height: 12),
+                          _errorBox(_regOtpError!),
+                        ],
+                        const SizedBox(height: 24),
+                        _regOtpLoading
+                            ? const Center(child: CircularProgressIndicator(color: kGold))
+                            : Column(children: [
+                                GoldButton(
+                                    label: "VERIFY & CREATE ACCOUNT",
+                                    icon: Icons.verified,
+                                    onPressed: _verifyRegOtp),
+                                const SizedBox(height: 10),
+                                GoldButton(
+                                    label: "RESEND CODE",
+                                    outline: true,
+                                    icon: Icons.refresh,
+                                    onPressed: _resendRegOtp),
+                              ]),
+                      ],
+                    ],
+
+                    // ── REGISTER · OTP EMAIL TAB ──
+                    // This is the CORRECT flow: register a NEW account via email OTP
+                    // NOT a login flow — completely separate from login OTP tab
+                    if (_registerTab == 1) ...[
+
+                      // Step 0: Enter email to register
+                      if (_regOtpEmailStep == 0) ...[
+                        _stepIndicator(current: 0, total: 2),
+                        const SizedBox(height: 16),
+                        const SectionLabel("REGISTER WITH EMAIL"),
+                        const SizedBox(height: 16),
+                        _infoBox(
+                          "Enter your email address. We'll send a one-time code to verify "
+                          "and create your new account.",
+                          Icons.email_outlined, kBlue,
+                        ),
+                        const SizedBox(height: 16),
+                        _buildField("EMAIL ADDRESS", _regOtpEmailCtrl, false),
+                        if (_regOtpEmailError != null) ...[
+                          const SizedBox(height: 12),
+                          _errorBox(_regOtpEmailError!,
+                              loginHint: (_regOtpEmailError!.toLowerCase().contains('already registered'))
+                                  ? () => setState(() {
+                                        _isRegister = false;
+                                        _loginTab = 1;
+                                        _resetRegOtpEmailState();
+                                      })
+                                  : null),
+                        ],
+                        const SizedBox(height: 24),
+                        _regOtpEmailLoading
+                            ? const Center(child: CircularProgressIndicator(color: kGold))
+                            : GoldButton(
+                                label: "SEND REGISTRATION CODE",
+                                icon: Icons.send,
+                                onPressed: _sendRegOtpEmail),
+                      ],
+
+                      // Step 1: Enter OTP code to verify email
+                      if (_regOtpEmailStep == 1) ...[
+                        _stepIndicator(current: 1, total: 2),
+                        const SizedBox(height: 16),
+                        const SectionLabel("VERIFY YOUR EMAIL"),
+                        const SizedBox(height: 16),
+                        if (_regOtpEmailSuccess != null)
+                          _successBox(_regOtpEmailSuccess!, Icons.mark_email_read),
+                        const SizedBox(height: 8),
+                        RichText(
+                          text: TextSpan(
+                            style: const TextStyle(color: kMuted, fontSize: 11,
+                                letterSpacing: 0.5, height: 1.6),
+                            children: [
+                              const TextSpan(text: 'Code sent to '),
+                              TextSpan(
+                                text: _regOtpEmailCtrl.text.trim(),
+                                style: const TextStyle(color: kGold,
+                                    fontWeight: FontWeight.w700),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        _buildField("6-DIGIT CODE", _regOtpEmailCodeCtrl, false),
+                        if (_regOtpEmailError != null) ...[
+                          const SizedBox(height: 12),
+                          _errorBox(_regOtpEmailError!),
+                        ],
+                        const SizedBox(height: 24),
+                        _regOtpEmailLoading
+                            ? const Center(child: CircularProgressIndicator(color: kGold))
+                            : Column(children: [
+                                GoldButton(
+                                    label: "VERIFY & CREATE ACCOUNT",
+                                    icon: Icons.verified,
+                                    onPressed: _verifyRegOtpEmail),
+                                const SizedBox(height: 10),
+                                GoldButton(
+                                    label: "RESEND CODE",
+                                    outline: true,
+                                    icon: Icons.refresh,
+                                    onPressed: () {
+                                      setState(() {
+                                        _regOtpEmailStep    = 0;
+                                        _regOtpEmailCodeCtrl.clear();
+                                        _regOtpEmailError   = null;
+                                        _regOtpEmailSuccess = null;
+                                      });
+                                      _sendRegOtpEmail();
+                                    }),
+                                const SizedBox(height: 10),
+                                // Back to email entry
+                                Center(
+                                  child: GestureDetector(
+                                    onTap: () => setState(() {
+                                      _regOtpEmailStep    = 0;
+                                      _regOtpEmailCodeCtrl.clear();
+                                      _regOtpEmailError   = null;
+                                      _regOtpEmailSuccess = null;
+                                    }),
+                                    child: const Text("← CHANGE EMAIL",
+                                        style: TextStyle(
+                                            color: kMuted, fontSize: 11, letterSpacing: 1)),
+                                  ),
+                                ),
+                              ]),
+                      ],
+                    ],
+
+                    const SizedBox(height: 20),
+                    Center(
+                      child: GestureDetector(
+                        onTap: () => setState(() {
+                          _isRegister = false;
+                          _error      = null;
+                          _regStep    = 0;
+                          _regOtpCtrl.clear();
+                          _regOtpError   = null;
+                          _regOtpSuccess = null;
+                          _emailCtrl.clear();
+                          _alreadyRegistered = false;
+                          _resetRegOtpEmailState();
+                        }),
+                        child: const Text(
+                          "Already have an account? LOGIN",
+                          style: TextStyle(color: kGold, fontSize: 11, letterSpacing: 1.5)),
+                      ),
+                    ),
+                  ],
+
+                  // ══════════════════════════════════════════════════════
+                  // LOGIN PAGE
+                  // ══════════════════════════════════════════════════════
+                  if (!_isRegister) ...[
+
+                    // ── LOGIN · PASSWORD TAB ──
+                    if (_loginTab == 0) ...[
                       const SectionLabel("CREDENTIALS"),
                       const SizedBox(height: 20),
                       _buildField("USERNAME", _userCtrl, false),
@@ -545,7 +954,8 @@ class _LoginScreenState extends State<LoginScreen> {
                         const SizedBox(height: 12),
                         _errorBox(_error!, hint: _showRegisterHint
                             ? () => setState(() {
-                                  _isRegister = true; _error = null;
+                                  _isRegister = true;
+                                  _error = null;
                                   _showRegisterHint = false;
                                 })
                             : null),
@@ -557,106 +967,156 @@ class _LoginScreenState extends State<LoginScreen> {
                               label: "ENTER",
                               icon: Icons.arrow_forward,
                               onPressed: _submitLogin),
-                    ],
-
-                    // REGISTER — STEP 0: fill form
-                    if (_isRegister && _regStep == 0) ...[
-                      const SectionLabel("REGISTER"),
-                      const SizedBox(height: 20),
-                      _buildField("USERNAME", _userCtrl, false),
-                      const SizedBox(height: 16),
-                      _buildField("EMAIL ADDRESS", _emailCtrl, false),
-                      const SizedBox(height: 16),
-                      _buildField("PASSWORD", _passCtrl, _obscure,
-                          suffix: IconButton(
-                            icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility,
-                                color: kMuted, size: 18),
-                            onPressed: () => setState(() => _obscure = !_obscure),
-                          )),
-                      const SizedBox(height: 8),
-                      // Info banner
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: kGold.withValues(alpha: 0.07),
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: kGold.withValues(alpha: 0.3)),
-                        ),
-                        child: const Row(children: [
-                          Icon(Icons.info_outline, color: kGold, size: 13),
-                          SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              "An OTP will be sent to your email to verify your account.",
-                              style: TextStyle(color: kGold, fontSize: 10, letterSpacing: 0.5),
-                            ),
+                      const SizedBox(height: 10),
+                      Center(
+                        child: GestureDetector(
+                          onTap: () => setState(() {
+                            _loginTab = 1;
+                            _isForgotPassword = true;
+                            _resetStep = false;
+                            _otpSent = false;
+                            _otpCodeCtrl.clear();
+                            _otpEmailCtrl.clear();
+                            _newPassCtrl.clear();
+                            _confirmPassCtrl.clear();
+                            _otpError   = null;
+                            _otpSuccess = null;
+                            _resetError = null;
+                            _error      = null;
+                          }),
+                          child: const Text(
+                            "Forgot password? RESET VIA EMAIL",
+                            style: TextStyle(color: kMuted, fontSize: 11,
+                                letterSpacing: 1, decoration: TextDecoration.underline,
+                                decorationColor: kMuted),
                           ),
-                        ]),
+                        ),
                       ),
-                      if (_error != null) ...[
-                        const SizedBox(height: 12),
-                        _errorBox(_error!),
-                      ],
-                      const SizedBox(height: 28),
-                      _loading
-                          ? const Center(child: CircularProgressIndicator(color: kGold))
-                          : GoldButton(
-                              label: "SEND VERIFICATION OTP",
-                              icon: Icons.send,
-                              onPressed: _sendRegOtp),
                     ],
 
-                    // REGISTER — STEP 1: enter OTP
-                    if (_isRegister && _regStep == 1) ...[
-                      const SectionLabel("VERIFY EMAIL"),
-                      const SizedBox(height: 16),
-                      if (_regOtpSuccess != null)
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          margin: const EdgeInsets.only(bottom: 14),
-                          decoration: BoxDecoration(
-                            color: kGreen.withValues(alpha: 0.08),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(color: kGreen.withValues(alpha: 0.4)),
-                          ),
-                          child: Row(children: [
-                            const Icon(Icons.mark_email_read, color: kGreen, size: 14),
-                            const SizedBox(width: 6),
-                            Expanded(child: Text(_regOtpSuccess!,
-                                style: const TextStyle(color: kGreen, fontSize: 11))),
-                          ]),
+                    // ── LOGIN · OTP EMAIL TAB ──
+                    if (_loginTab == 1) ...[
+                      SectionLabel(_isForgotPassword ? "RESET PASSWORD" : "EMAIL OTP LOGIN"),
+                      const SizedBox(height: 20),
+
+                      if (_isForgotPassword && !_resetStep)
+                        _infoBox(
+                          "Enter your registered email. A password reset code will be sent.",
+                          Icons.lock_reset, kRed,
                         ),
-                      _buildField("6-DIGIT OTP CODE", _regOtpCtrl, false),
-                      if (_regOtpError != null) ...[
-                        const SizedBox(height: 12),
-                        _errorBox(_regOtpError!),
+
+                      if (!_isForgotPassword && !_otpSent)
+                        _infoBox(
+                          "Enter your registered email. A login code will be sent.",
+                          Icons.email_outlined, kBlue,
+                        ),
+
+                      if (_resetSuccess != null) ...[
+                        const SizedBox(height: 0),
+                        _successBox(_resetSuccess!, Icons.check_circle_outline),
                       ],
-                      const SizedBox(height: 24),
-                      _regOtpLoading
-                          ? const Center(child: CircularProgressIndicator(color: kGold))
-                          : Column(children: [
-                              GoldButton(
-                                  label: "VERIFY & CREATE ACCOUNT",
-                                  icon: Icons.verified,
-                                  onPressed: _verifyRegOtp),
-                              const SizedBox(height: 10),
-                              GoldButton(
-                                  label: "RESEND OTP",
-                                  outline: true,
-                                  icon: Icons.refresh,
-                                  onPressed: () => setState(() {
-                                        _regStep       = 0;
-                                        _regOtpCtrl.clear();
-                                        _regOtpError   = null;
-                                        _regOtpSuccess = null;
-                                      })),
-                            ]),
+
+                      if (_resetStep) ...[
+                        if (_otpSuccess != null)
+                          _successBox(_otpSuccess!, Icons.verified),
+                        _buildField("NEW PASSWORD", _newPassCtrl, _newPassObscure,
+                            suffix: IconButton(
+                              icon: Icon(_newPassObscure ? Icons.visibility_off : Icons.visibility,
+                                  color: kMuted, size: 18),
+                              onPressed: () => setState(() => _newPassObscure = !_newPassObscure),
+                            )),
+                        const SizedBox(height: 16),
+                        _buildField("CONFIRM PASSWORD", _confirmPassCtrl, _confirmPassObscure,
+                            suffix: IconButton(
+                              icon: Icon(_confirmPassObscure ? Icons.visibility_off : Icons.visibility,
+                                  color: kMuted, size: 18),
+                              onPressed: () => setState(() => _confirmPassObscure = !_confirmPassObscure),
+                            )),
+                        if (_resetError != null) ...[
+                          const SizedBox(height: 12),
+                          _errorBox(_resetError!),
+                        ],
+                        const SizedBox(height: 24),
+                        _otpLoading
+                            ? const Center(child: CircularProgressIndicator(color: kGold))
+                            : GoldButton(
+                                label: "SET NEW PASSWORD",
+                                icon: Icons.lock_reset,
+                                onPressed: _resetPassword),
+                      ] else ...[
+                        _buildField("EMAIL ADDRESS", _otpEmailCtrl, false),
+                        if (_otpSent) ...[
+                          const SizedBox(height: 16),
+                          _buildField(
+                            _isForgotPassword ? "6-DIGIT RESET CODE" : "6-DIGIT LOGIN CODE",
+                            _otpCodeCtrl, false,
+                          ),
+                        ],
+                        if (_otpError != null) ...[
+                          const SizedBox(height: 12),
+                          _errorBox(_otpError!),
+                        ],
+                        if (_otpSuccess != null && !_resetStep) ...[
+                          const SizedBox(height: 12),
+                          _successBox(_otpSuccess!, Icons.mark_email_read),
+                        ],
+                        const SizedBox(height: 28),
+                        _otpLoading
+                            ? const Center(child: CircularProgressIndicator(color: kGold))
+                            : !_otpSent
+                                ? GoldButton(
+                                    label: _isForgotPassword ? "SEND RESET CODE" : "SEND LOGIN CODE",
+                                    icon: Icons.send,
+                                    onPressed: _sendOtp)
+                                : Column(children: [
+                                    GoldButton(
+                                      label: _isForgotPassword ? "VERIFY RESET CODE" : "VERIFY & LOGIN",
+                                      icon: Icons.verified,
+                                      onPressed: _verifyOtp),
+                                    const SizedBox(height: 10),
+                                    GoldButton(
+                                      label: _isForgotPassword ? "RESEND RESET CODE" : "RESEND LOGIN CODE",
+                                      outline: true,
+                                      icon: Icons.refresh,
+                                      onPressed: () async {
+                                        setState(() {
+                                          _otpCodeCtrl.clear();
+                                          _otpError   = null;
+                                          _otpSuccess = null;
+                                          _otpSent    = false;
+                                        });
+                                        await _sendOtp();
+                                      }),
+                                  ]),
+                      ],
+
+                      if (_isForgotPassword) ...[
+                        const SizedBox(height: 12),
+                        Center(
+                          child: GestureDetector(
+                            onTap: () => setState(() {
+                              _isForgotPassword = false;
+                              _resetStep = false;
+                              _otpSent   = false;
+                              _otpCodeCtrl.clear();
+                              _otpEmailCtrl.clear();
+                              _newPassCtrl.clear();
+                              _confirmPassCtrl.clear();
+                              _otpError     = null;
+                              _otpSuccess   = null;
+                              _resetError   = null;
+                              _resetSuccess = null;
+                            }),
+                            child: const Text("← BACK TO LOGIN",
+                                style: TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
+                          ),
+                        ),
+                      ],
                     ],
 
-                    const SizedBox(height: 16),
-                    // Google — Web only
-                    if (!_isRegister &&
-                        (kIsWeb || (!kIsWeb && (Platform.isAndroid || Platform.isIOS)))) ...[
+                    // ── Google + Switch to Register ──
+                    const SizedBox(height: 20),
+                    if (kIsWeb || (!kIsWeb && (Platform.isAndroid || Platform.isIOS))) ...[
                       Row(children: [
                         Expanded(child: Container(height: 1, color: kBorder)),
                         const Padding(
@@ -692,95 +1152,26 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 16),
                     ],
-
                     Center(
                       child: GestureDetector(
                         onTap: () => setState(() {
-                          _isRegister = !_isRegister;
+                          _isRegister = true;
                           _error      = null;
                           _regStep    = 0;
                           _regOtpCtrl.clear();
                           _regOtpError   = null;
                           _regOtpSuccess = null;
                           _emailCtrl.clear();
+                          _alreadyRegistered = false;
+                          _resetRegOtpEmailState();
+                          // Mirror current login tab into register tab
+                          _registerTab = _loginTab;
                         }),
-                        child: Text(
-                          _isRegister ? "Already have an account? LOGIN" : "No account? REGISTER",
-                          style: const TextStyle(color: kGold, fontSize: 11, letterSpacing: 1.5)),
+                        child: const Text(
+                          "No account? REGISTER",
+                          style: TextStyle(color: kGold, fontSize: 11, letterSpacing: 1.5)),
                       ),
                     ),
-                  ],
-
-                  // ══════════════════════════════════════════
-                  // TAB 1 — OTP Email Login
-                  // ══════════════════════════════════════════
-                  if (_tab == 1) ...[
-                    const SectionLabel("EMAIL OTP LOGIN"),
-                    const SizedBox(height: 20),
-                    _buildField("EMAIL ADDRESS", _otpEmailCtrl, false),
-                    if (_otpSent) ...[
-                      const SizedBox(height: 16),
-                      _buildField("6-DIGIT OTP CODE", _otpCodeCtrl, false),
-                    ],
-                    if (_otpError != null) ...[
-                      const SizedBox(height: 12),
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: kRed.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: kRed.withValues(alpha: 0.3)),
-                        ),
-                        child: Row(children: [
-                          const Icon(Icons.error_outline, color: kRed, size: 14),
-                          const SizedBox(width: 6),
-                          Expanded(child: Text(_otpError!,
-                              style: const TextStyle(color: kRed, fontSize: 11))),
-                        ]),
-                      ),
-                    ],
-                    if (_otpSuccess != null) ...[
-                      const SizedBox(height: 12),
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: kGreen.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: kGreen.withValues(alpha: 0.4)),
-                        ),
-                        child: Row(children: [
-                          const Icon(Icons.mark_email_read, color: kGreen, size: 14),
-                          const SizedBox(width: 6),
-                          Expanded(child: Text(_otpSuccess!,
-                              style: const TextStyle(color: kGreen, fontSize: 11))),
-                        ]),
-                      ),
-                    ],
-                    const SizedBox(height: 28),
-                    _otpLoading
-                        ? const Center(child: CircularProgressIndicator(color: kGold))
-                        : !_otpSent
-                            ? GoldButton(
-                                label: "SEND OTP",
-                                icon: Icons.send,
-                                onPressed: _sendOtp)
-                            : Column(children: [
-                                GoldButton(
-                                  label: "VERIFY & LOGIN",
-                                  icon: Icons.verified,
-                                  onPressed: _verifyOtp),
-                                const SizedBox(height: 10),
-                                GoldButton(
-                                  label: "RESEND OTP",
-                                  outline: true,
-                                  icon: Icons.refresh,
-                                  onPressed: () => setState(() {
-                                    _otpSent = false;
-                                    _otpCodeCtrl.clear();
-                                    _otpError   = null;
-                                    _otpSuccess = null;
-                                  })),
-                              ]),
                   ],
 
                   const SizedBox(height: 24),
@@ -799,13 +1190,30 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  Widget _tabBtn(String label, int index, IconData icon) {
-    final active = _tab == index;
+  /* ── Tab button — switches loginTab or registerTab depending on mode ── */
+  Widget _tabBtn(String label, int index) {
+    final active = _isRegister ? (_registerTab == index) : (_loginTab == index);
+    final icon   = index == 0 ? Icons.lock_outline : Icons.email_outlined;
     return GestureDetector(
-      onTap: () => setState(() {
-        _tab = index; _error = null; _otpError = null; _otpSuccess = null;
-        _regStep = 0;
-      }),
+      onTap: () {
+        setState(() {
+          if (_isRegister) {
+            _registerTab = index;
+            _resetRegOtpEmailState();
+            _error = null;
+          } else {
+            _loginTab = index;
+            _error = null;
+            _otpError = null;
+            _otpSuccess = null;
+            _regStep = 0;
+            if (index == 0) {
+              _isForgotPassword = false;
+              _resetStep = false;
+            }
+          }
+        });
+      },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
@@ -824,7 +1232,98 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  Widget _errorBox(String msg, {VoidCallback? hint}) {
+  /* ── Step indicator dots ── */
+  Widget _stepIndicator({required int current, required int total}) {
+    return Row(
+      children: List.generate(total, (i) {
+        final isDone   = i < current;
+        final isActive = i == current;
+        return Container(
+          width: 8, height: 8,
+          margin: const EdgeInsets.only(right: 6),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: isDone || isActive ? kGold : kBorder,
+            boxShadow: isActive
+                ? [BoxShadow(color: kGold.withValues(alpha: 0.5), blurRadius: 6)]
+                : null,
+          ),
+        );
+      }),
+    );
+  }
+
+  /* ── Resend OTP for PASSWORD tab register ── */
+  Future<void> _resendRegOtp() async {
+    setState(() {
+      _regOtpCtrl.clear();
+      _regOtpError   = null;
+      _regOtpSuccess = null;
+    });
+    final email = _emailCtrl.text.trim().toLowerCase();
+    setState(() => _loading = true);
+    try {
+      final resp = await http.post(
+        Uri.parse('${baseUrl()}/auth/register/send-otp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'username': _userCtrl.text.trim(),
+          'password': _passCtrl.text,
+          'email': email
+        }),
+      ).timeout(const Duration(seconds: 15));
+      final body = jsonDecode(resp.body);
+      if (resp.statusCode == 200) {
+        setState(() => _regOtpSuccess = 'New code sent to $email — check your inbox.');
+      } else {
+        setState(() => _regOtpError = body['detail'] ?? 'Failed to resend code.');
+      }
+    } catch (_) {
+      setState(() => _regOtpError = 'Cannot reach server.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Widget _infoBox(String text, IconData icon, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      margin: const EdgeInsets.only(bottom: 14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(children: [
+        Icon(icon, color: color, size: 13),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(text,
+              style: TextStyle(color: color, fontSize: 10, letterSpacing: 0.5)),
+        ),
+      ]),
+    );
+  }
+
+  Widget _successBox(String msg, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      margin: const EdgeInsets.only(bottom: 14),
+      decoration: BoxDecoration(
+        color: kGreen.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: kGreen.withValues(alpha: 0.4)),
+      ),
+      child: Row(children: [
+        Icon(icon, color: kGreen, size: 14),
+        const SizedBox(width: 6),
+        Expanded(child: Text(msg,
+            style: const TextStyle(color: kGreen, fontSize: 11))),
+      ]),
+    );
+  }
+
+  Widget _errorBox(String msg, {VoidCallback? hint, VoidCallback? loginHint}) {
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
@@ -860,6 +1359,27 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
         ],
+        if (loginHint != null) ...[
+          const SizedBox(height: 8),
+          GestureDetector(
+            onTap: loginHint,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: kGold.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(3),
+                border: Border.all(color: kGold),
+              ),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.login, color: kGold, size: 13),
+                SizedBox(width: 6),
+                Text("TAP HERE TO LOGIN",
+                    style: TextStyle(color: kGold, fontSize: 10,
+                        letterSpacing: 1.5, fontWeight: FontWeight.w700)),
+              ]),
+            ),
+          ),
+        ],
       ]),
     );
   }
@@ -876,7 +1396,9 @@ class _LoginScreenState extends State<LoginScreen> {
           controller: ctrl,
           obscureText: obscure,
           style: const TextStyle(color: kText, fontSize: 14),
-          onSubmitted: (_) => _submitLogin(),
+          onSubmitted: (_) {
+            if (!_isRegister && _loginTab == 0) _submitLogin();
+          },
           decoration: InputDecoration(
             filled: true,
             fillColor: kCard,
@@ -896,7 +1418,314 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   2. HOME SCREEN — No create folder button, no NEW icon
+   2. USERNAME SETUP SCREEN
+   - fromOtpEmail=true  → came from OTP EMAIL register: ask username + password
+   - fromOtpEmail=false → came from Google sign-in: ask username only (skip allowed)
+═══════════════════════════════════════════════════════════════════════ */
+class UsernameSetupScreen extends StatefulWidget {
+  /// Set to true when arriving from OTP EMAIL registration.
+  /// Will show both username AND password fields.
+  final bool fromOtpEmail;
+  const UsernameSetupScreen({super.key, this.fromOtpEmail = false});
+  @override
+  State<UsernameSetupScreen> createState() => _UsernameSetupScreenState();
+}
+
+class _UsernameSetupScreenState extends State<UsernameSetupScreen> {
+  final _usernameCtrl    = TextEditingController();
+  final _passCtrl        = TextEditingController();
+  final _confirmPassCtrl = TextEditingController();
+  bool _obscurePass      = true;
+  bool _obscureConfirm   = true;
+  bool _loading          = false;
+  String? _error;
+
+  Future<void> _save() async {
+    final name = _usernameCtrl.text.trim();
+    if (name.isEmpty) {
+      setState(() => _error = "Please enter a username.");
+      return;
+    }
+    if (name.length < 3) {
+      setState(() => _error = "Username must be at least 3 characters.");
+      return;
+    }
+
+    // Extra validation when password is required (OTP email flow)
+    if (widget.fromOtpEmail) {
+      final pass    = _passCtrl.text;
+      final confirm = _confirmPassCtrl.text;
+      if (pass.length < 4) {
+        setState(() => _error = "Password must be at least 4 characters.");
+        return;
+      }
+      if (pass != confirm) {
+        setState(() => _error = "Passwords do not match.");
+        return;
+      }
+    }
+
+    setState(() { _loading = true; _error = null; });
+    try {
+      // 1. Set username
+      final usernameResp = await http.post(
+        Uri.parse('${baseUrl()}/auth/set-username'),
+        headers: AppSession.authHeaders,
+        body: jsonEncode({'username': name}),
+      ).timeout(const Duration(seconds: 10));
+
+      final usernameBody = jsonDecode(usernameResp.body);
+      if (usernameResp.statusCode != 200) {
+        setState(() => _error = usernameBody['detail'] ?? 'Failed to set username.');
+        return;
+      }
+      AppSession.user?['username'] = usernameBody['username'];
+
+      // 2. If OTP email flow, also update the password via reset-password endpoint
+      if (widget.fromOtpEmail) {
+        final email = AppSession.user?['email'] ?? '';
+        final passResp = await http.post(
+          Uri.parse('${baseUrl()}/auth/set-password'),
+          headers: AppSession.authHeaders,
+          body: jsonEncode({'email': email, 'new_password': _passCtrl.text}),
+        ).timeout(const Duration(seconds: 10));
+
+        if (passResp.statusCode != 200) {
+          final passBody = jsonDecode(passResp.body);
+          setState(() => _error = passBody['detail'] ?? 'Failed to set password.');
+          return;
+        }
+      }
+
+      if (mounted) {
+        Navigator.pushReplacement(
+            context, MaterialPageRoute(builder: (_) => const HomeScreen()));
+      }
+    } catch (e) {
+      setState(() => _error = 'Cannot reach server.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _skip() {
+    Navigator.pushReplacement(
+        context, MaterialPageRoute(builder: (_) => const HomeScreen()));
+  }
+
+  Widget _field(String label, TextEditingController ctrl, bool obscure,
+      {Widget? suffix, String? hint}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: const TextStyle(color: kMuted, fontSize: 10, letterSpacing: 2.5)),
+        const SizedBox(height: 8),
+        TextField(
+          controller: ctrl,
+          obscureText: obscure,
+          style: const TextStyle(color: kText, fontSize: 14),
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: kCard,
+            hintText: hint,
+            hintStyle: const TextStyle(color: kBorder, fontSize: 12),
+            suffixIcon: suffix,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(4),
+                borderSide: const BorderSide(color: kBorder)),
+            focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(4),
+                borderSide: const BorderSide(color: kGold, width: 1.5)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBg,
+      body: CustomPaint(
+        painter: GridPainter(),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Container(
+              width: 380,
+              padding: const EdgeInsets.all(40),
+              decoration: BoxDecoration(
+                color: kSurface,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: kBorder),
+                boxShadow: [BoxShadow(color: kGold.withValues(alpha: 0.08),
+                    blurRadius: 60, spreadRadius: 10)],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // ── Logo ──
+                  Row(children: [
+                    Container(
+                      width: 36, height: 36,
+                      decoration: BoxDecoration(
+                          color: kGold, borderRadius: BorderRadius.circular(4)),
+                      child: const Icon(Icons.photo_camera, color: kBg, size: 20),
+                    ),
+                    const SizedBox(width: 12),
+                    const Text("HACKX",
+                        style: TextStyle(color: kText, fontSize: 22,
+                            fontWeight: FontWeight.w800, letterSpacing: 6)),
+                  ]),
+                  const SizedBox(height: 8),
+                  const Text("Set up your profile",
+                      style: TextStyle(color: kMuted, fontSize: 12, letterSpacing: 1.5)),
+                  const SizedBox(height: 28),
+
+                  // ── Success banner ──
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    margin: const EdgeInsets.only(bottom: 20),
+                    decoration: BoxDecoration(
+                      color: kGreen.withValues(alpha: 0.07),
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: kGreen.withValues(alpha: 0.3)),
+                    ),
+                    child: Row(children: [
+                      const Icon(Icons.check_circle, color: kGreen, size: 16),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          "Account created! 🎉\nSigned in as ${AppSession.user?['email'] ?? 'user'}",
+                          style: const TextStyle(color: kGreen, fontSize: 11,
+                              height: 1.6, letterSpacing: 0.5),
+                        ),
+                      ),
+                    ]),
+                  ),
+
+                  // ── Section label changes based on mode ──
+                  SectionLabel(widget.fromOtpEmail
+                      ? "COMPLETE YOUR PROFILE"
+                      : "CHOOSE A USERNAME"),
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                      color: kGold.withValues(alpha: 0.07),
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: kGold.withValues(alpha: 0.3)),
+                    ),
+                    child: Row(children: [
+                      const Icon(Icons.person_outline, color: kGold, size: 14),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          widget.fromOtpEmail
+                              ? "Set a username and password so you can also log in with them later."
+                              : "Pick a display username, or skip to use your email as your username.",
+                          style: const TextStyle(
+                              color: kGold, fontSize: 10, letterSpacing: 0.5),
+                        ),
+                      ),
+                    ]),
+                  ),
+
+                  // ── Username field ──
+                  _field("USERNAME", _usernameCtrl, false,
+                      hint: "e.g. coolphotographer42"),
+
+                  // ── Password fields — only for OTP email registration ──
+                  if (widget.fromOtpEmail) ...[
+                    const SizedBox(height: 16),
+                    _field("PASSWORD", _passCtrl, _obscurePass,
+                        hint: "At least 4 characters",
+                        suffix: IconButton(
+                          icon: Icon(_obscurePass
+                              ? Icons.visibility_off : Icons.visibility,
+                              color: kMuted, size: 18),
+                          onPressed: () =>
+                              setState(() => _obscurePass = !_obscurePass),
+                        )),
+                    const SizedBox(height: 16),
+                    _field("CONFIRM PASSWORD", _confirmPassCtrl, _obscureConfirm,
+                        hint: "Re-enter password",
+                        suffix: IconButton(
+                          icon: Icon(_obscureConfirm
+                              ? Icons.visibility_off : Icons.visibility,
+                              color: kMuted, size: 18),
+                          onPressed: () =>
+                              setState(() => _obscureConfirm = !_obscureConfirm),
+                        )),
+                  ],
+
+                  // ── Error box ──
+                  if (_error != null) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: kRed.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: kRed.withValues(alpha: 0.3)),
+                      ),
+                      child: Row(children: [
+                        const Icon(Icons.error_outline, color: kRed, size: 14),
+                        const SizedBox(width: 6),
+                        Expanded(child: Text(_error!,
+                            style: const TextStyle(color: kRed, fontSize: 11))),
+                      ]),
+                    ),
+                  ],
+
+                  const SizedBox(height: 28),
+                  _loading
+                      ? const Center(child: CircularProgressIndicator(color: kGold))
+                      : Column(children: [
+                          GoldButton(
+                              label: widget.fromOtpEmail
+                                  ? "SAVE & CONTINUE"
+                                  : "SET USERNAME",
+                              icon: Icons.check,
+                              onPressed: _save),
+                          const SizedBox(height: 10),
+                          // Only Google flow gets a skip — OTP email flow must set password
+                          if (!widget.fromOtpEmail)
+                            GoldButton(
+                                label: "SKIP FOR NOW",
+                                outline: true,
+                                icon: Icons.arrow_forward,
+                                onPressed: _skip),
+                        ]),
+
+                  const SizedBox(height: 16),
+                  Center(
+                    child: Text(
+                      widget.fromOtpEmail
+                          ? "You can change your username & password later in settings."
+                          : "You can change your username later in settings.",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          color: kMuted.withValues(alpha: 0.5),
+                          fontSize: 9, letterSpacing: 1),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   3. HOME SCREEN
 ═══════════════════════════════════════════════════════════════════════ */
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -952,11 +1781,22 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _logout() async {
-    await _googleSignIn.signOut();
-    http.post(Uri.parse('${baseUrl()}/auth/logout'),
-        headers: AppSession.authHeaders);
+    try {
+      if (kIsWeb || (!kIsWeb && (Platform.isAndroid || Platform.isIOS))) {
+        await _googleSignIn.signOut();
+      }
+    } catch (_) {}
+
+    try {
+      await http.post(
+        Uri.parse('${baseUrl()}/auth/logout'),
+        headers: AppSession.authHeaders,
+      ).timeout(const Duration(seconds: 5));
+    } catch (_) {}
+
     AppSession.token = null;
     AppSession.user  = null;
+
     if (mounted) {
       Navigator.pushReplacement(
           context, MaterialPageRoute(builder: (_) => const LoginScreen()));
@@ -993,7 +1833,6 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: buildAppBar(
         "HACKX  ·  ${AppSession.user?['username'] ?? ''}",
         actions: [
-          // ── Logout only — no create folder button ──
           IconButton(
               icon: const Icon(Icons.logout, color: kMuted),
               tooltip: "Logout",
@@ -1116,7 +1955,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     const SizedBox(height: 8),
                   ],
 
-                  // ── Manual folders (no header new/plus button) ──
                   if (manualList.isNotEmpty) ...[
                     const Divider(color: kBorder, height: 1),
                     const Padding(
@@ -1159,7 +1997,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   3. FOLDER PHOTOS SCREEN
+   4. FOLDER PHOTOS SCREEN
 ═══════════════════════════════════════════════════════════════════════ */
 class FolderPhotosScreen extends StatefulWidget {
   final Map<String, dynamic> folder;
@@ -1245,7 +2083,6 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // On web: images can't be loaded by file path — show placeholder
               (!kIsWeb && path != null && File(path).existsSync())
                   ? Image.file(File(path), fit: BoxFit.cover)
                   : Container(
@@ -1574,7 +2411,7 @@ class _FolderPhotosScreenState extends State<FolderPhotosScreen> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   4. UPLOAD SCREEN — Fixed for web (uses bytes not File path)
+   5. UPLOAD SCREEN
 ═══════════════════════════════════════════════════════════════════════ */
 class UploadScreen extends StatefulWidget {
   final int? folderId;
@@ -1585,7 +2422,7 @@ class UploadScreen extends StatefulWidget {
 
 class _UploadScreenState extends State<UploadScreen> {
   List<XFile> selectedImages    = [];
-  List<Uint8List> selectedBytes = []; // bytes for web preview
+  List<Uint8List> selectedBytes = [];
   final Set<int> _preciousIndexes = {};
   final ImagePicker picker = ImagePicker();
 
@@ -1595,7 +2432,6 @@ class _UploadScreenState extends State<UploadScreen> {
     if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       picked = await picker.pickMultiImage();
     } else {
-      // Web & desktop: use file_picker to get bytes
       final result = await FilePicker.platform
           .pickFiles(type: FileType.image, allowMultiple: true, withData: true);
       if (result != null) {
@@ -1605,7 +2441,6 @@ class _UploadScreenState extends State<UploadScreen> {
 
     if (picked.isEmpty) return;
 
-    // Pre-load bytes for all images (needed for web preview & upload)
     final List<Uint8List> bytes = [];
     for (final img in picked) {
       bytes.add(await img.readAsBytes());
@@ -1729,7 +2564,6 @@ class _UploadScreenState extends State<UploadScreen> {
                         child: Stack(
                           fit: StackFit.expand,
                           children: [
-                            // Always use bytes-based image (works on web + native)
                             bytes != null
                                 ? Image.memory(bytes, fit: BoxFit.cover)
                                 : Container(color: kSurface,
@@ -1836,7 +2670,7 @@ class _UploadScreenState extends State<UploadScreen> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   5. PROCESSING SCREEN — bytes-based upload (works on web)
+   6. PROCESSING SCREEN
 ═══════════════════════════════════════════════════════════════════════ */
 class ProcessingScreen extends StatefulWidget {
   final List<XFile> images;
@@ -1899,7 +2733,6 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
     }
   }
 
-  // Find matching bytes by filename
   Uint8List? _findBytes(String filename) {
     final idx = widget.images.indexWhere((img) => img.name == filename);
     if (idx < 0 || idx >= widget.imageBytes.length) return null;
@@ -1913,12 +2746,12 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
   }
 
   Color _folderColor(String folderName) {
-    if (folderName.contains('Excellent'))                     return const Color(0xFF00E676);
-    if (folderName.contains('Great'))                         return kGreen;
-    if (folderName.contains('Good') && !folderName.contains('Below')) return kGold;
-    if (folderName.contains('Average') && !folderName.contains('Below')) return const Color(0xFFFF9800);
-    if (folderName.contains('Below'))                         return const Color(0xFFFF5722);
-    if (folderName.contains('Poor'))                          return kRed;
+    if (folderName.contains('Excellent'))                                    return const Color(0xFF00E676);
+    if (folderName.contains('Great'))                                        return kGreen;
+    if (folderName.contains('Good') && !folderName.contains('Below'))       return kGold;
+    if (folderName.contains('Average') && !folderName.contains('Below'))    return const Color(0xFFFF9800);
+    if (folderName.contains('Below'))                                        return const Color(0xFFFF5722);
+    if (folderName.contains('Poor'))                                         return kRed;
     return kMuted;
   }
 
@@ -2105,7 +2938,6 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                               fontWeight: FontWeight.w800,
                                               fontSize: 13)),
                                     ),
-                                    // Use bytes for image display (works on web)
                                     bytes != null
                                         ? Image.memory(bytes,
                                             width: 70, height: 70, fit: BoxFit.cover)
@@ -2188,8 +3020,7 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                                                     Flexible(
                                                       child: Text(item['folder'],
                                                           style: TextStyle(
-                                                              color: _folderColor(
-                                                                  item['folder']),
+                                                              color: _folderColor(item['folder']),
                                                               fontSize: 9,
                                                               letterSpacing: 0.5,
                                                               fontWeight: FontWeight.w600),
@@ -2332,7 +3163,7 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   6. ENHANCING SCREEN — bytes-based (works on web)
+   7. ENHANCING SCREEN
 ═══════════════════════════════════════════════════════════════════════ */
 class EnhancingScreen extends StatefulWidget {
   final Uint8List? imageBytes;
@@ -2449,7 +3280,6 @@ class _EnhancingScreenState extends State<EnhancingScreen> {
           ));
         }
       }
-      // Web: saving to filesystem not supported — user can long-press image
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
