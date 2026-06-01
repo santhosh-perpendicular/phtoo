@@ -2,6 +2,17 @@
 main.py — HACKX FastAPI Backend
 Features: Auth · SQLite DB · AI Captions · Organized Folders · Precious Photo Guard · Google OAuth
 Registration now requires OTP email verification before account is created.
+Password reset via OTP email supported.
+
+EMAIL CHANGES:
+ - _send_login_otp_email       → BLUE theme  — "Login Verification" branding
+ - _send_reset_otp_email       → RED theme   — "Password Reset / Security Alert" branding
+ - _send_registration_otp_email → GOLD theme — "Welcome / Verify Email" branding
+
+REGISTER CHANGES:
+ - If email already registered → 409 with clear message → Flutter shows "Go to Login" button
+ - Google/OTP signup: if username == email address, Flutter shows UsernameSetupScreen
+   with a skip option (username stays as email until user sets one)
 """
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Header
 import smtplib
@@ -28,7 +39,8 @@ from database import (
     get_user_by_email, update_user_email,
     get_folders, create_folder, delete_folder,
     save_photo, get_photos, delete_photo, get_photo,
-    set_precious, move_photo, email_exists
+    set_precious, move_photo, email_exists,
+    reset_user_password,
 )
 load_dotenv()
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -43,6 +55,9 @@ _otp_store: dict[str, dict] = {}
 
 # ── OTP store for REGISTRATION (email → {otp, expires_at, username, password}) ──
 _reg_otp_store: dict[str, dict] = {}
+
+# ── OTP store for PASSWORD RESET (email → {otp, expires_at, verified}) ──
+_reset_otp_store: dict[str, dict] = {}
 
 # ── CORS ─────────────────────────────────────────────────────────────
 app.add_middleware(
@@ -72,36 +87,257 @@ def get_current_user(authorization: str = Header(None)) -> dict:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return user
 
+
 # ═══════════════════════════════════════════════════════════════════════
-#  EMAIL HELPER
+#  EMAIL HELPERS  — three distinct themes
 # ═══════════════════════════════════════════════════════════════════════
-def _send_otp_email(to_email: str, otp: str, subject_prefix: str = "Login"):
+
+def _send_login_otp_email(to_email: str, otp: str):
+    """
+    LOGIN OTP email.
+    Theme: BLUE — clock icon, 'Login Verification' branding.
+    Subject: HACKX Login Code: XXXXXX
+    """
     gmail_user = os.getenv("GMAIL_USER")
     gmail_pass = os.getenv("GMAIL_APP_PASSWORD")
     if not gmail_user or not gmail_pass:
         raise Exception("GMAIL_USER or GMAIL_APP_PASSWORD not set in .env")
+
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"HACKX {subject_prefix} Code: {otp}"
+    msg["Subject"] = f"HACKX Login Code: {otp}"
     msg["From"]    = gmail_user
     msg["To"]      = to_email
+
     html = (
-        '<html><body style="background:#080808;color:#F0F0F0;font-family:monospace;padding:40px">'
-        '<div style="max-width:400px;margin:auto;background:#111;border:1px solid #2A2A2A;border-radius:8px;padding:32px">'
-        '<div style="display:flex;align-items:center;margin-bottom:24px">'
-        '<div style="background:#FFD600;width:36px;height:36px;border-radius:4px;margin-right:12px">'
-        '<span style="font-size:20px">&#128247;</span></div>'
-        '<span style="color:#F0F0F0;font-size:22px;font-weight:800;letter-spacing:6px">HACKX</span></div>'
-        f'<p style="color:#666;font-size:12px;letter-spacing:1.5px">YOUR {subject_prefix.upper()} CODE</p>'
-        '<div style="background:#181818;border:1px solid #FFD600;border-radius:6px;padding:24px;text-align:center;margin:16px 0">'
-        f'<span style="color:#FFD600;font-size:36px;font-weight:800;letter-spacing:12px">{otp}</span></div>'
-        '<p style="color:#666;font-size:11px">This code expires in <strong style="color:#F0F0F0">10 minutes</strong>.</p>'
-        '<p style="color:#444;font-size:10px;margin-top:24px">If you did not request this, ignore this email.</p>'
-        '</div></body></html>'
+        '<html><body style="margin:0;padding:0;background:#080808;font-family:monospace">'
+        '<table width="100%" cellpadding="0" cellspacing="0">'
+        '<tr><td align="center" style="padding:40px 16px">'
+        '<table width="420" cellpadding="0" cellspacing="0"'
+        ' style="background:#111;border:1px solid #1A2A4A;border-radius:8px;overflow:hidden">'
+
+        # Header
+        '<tr><td style="background:linear-gradient(135deg,#0D1B3E 0%,#1A2F6B 100%);padding:28px 32px">'
+        '<table cellpadding="0" cellspacing="0"><tr>'
+        '<td style="background:#2196F3;width:38px;height:38px;border-radius:6px;'
+        'text-align:center;vertical-align:middle;font-size:20px">&#128247;</td>'
+        '<td style="padding-left:12px">'
+        '<div style="color:#F0F0F0;font-size:22px;font-weight:800;letter-spacing:6px">HACKX</div>'
+        '<div style="color:#5C8AE6;font-size:10px;letter-spacing:2px;margin-top:2px">AI PHOTO SELECTOR</div>'
+        '</td></tr></table></td></tr>'
+
+        # Body
+        '<tr><td style="padding:32px">'
+        '<div style="color:#5C8AE6;font-size:11px;letter-spacing:3px;margin-bottom:8px">&#128274; LOGIN VERIFICATION</div>'
+        '<div style="color:#F0F0F0;font-size:15px;line-height:1.6;margin-bottom:20px">'
+        'Someone (hopefully you) requested a one-time login code for your HACKX account.'
+        '</div>'
+
+        # OTP box
+        '<div style="background:#0A1628;border:2px solid #2196F3;border-radius:8px;padding:28px;'
+        'text-align:center;margin:20px 0;box-shadow:0 0 24px rgba(33,150,243,0.25)">'
+        '<div style="color:#5C8AE6;font-size:10px;letter-spacing:3px;margin-bottom:10px">YOUR LOGIN CODE</div>'
+        f'<div style="color:#2196F3;font-size:42px;font-weight:800;letter-spacing:14px">{otp}</div>'
+        '<div style="color:#3A5A8A;font-size:10px;letter-spacing:1px;margin-top:10px">&#9201; EXPIRES IN 10 MINUTES</div>'
+        '</div>'
+
+        '<div style="color:#3A5A8A;font-size:11px;line-height:1.6">'
+        'Enter this code on the HACKX login screen to sign in.<br>'
+        'This code is <strong style="color:#5C8AE6">single-use</strong> and valid for 10 minutes only.'
+        '</div>'
+
+        '<div style="border-top:1px solid #1A2A4A;margin-top:24px;padding-top:16px">'
+        '<div style="color:#253550;font-size:10px">'
+        '&#9888; If you did not request this login code, you can safely ignore this email. Your account remains secure.'
+        '</div></div>'
+        '</td></tr>'
+
+        # Footer
+        '<tr><td style="background:#0A0A0A;padding:16px 32px;border-top:1px solid #1A2A4A">'
+        '<div style="color:#253550;font-size:9px;letter-spacing:2px;text-align:center">'
+        'HACKX &middot; POWERED BY GROQ AI + OPENCV'
+        '</div></td></tr>'
+
+        '</table></td></tr></table></body></html>'
     )
     msg.attach(MIMEText(html, "html"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(gmail_user, gmail_pass)
         server.sendmail(gmail_user, to_email, msg.as_string())
+
+
+def _send_reset_otp_email(to_email: str, otp: str):
+    """
+    PASSWORD RESET OTP email.
+    Theme: RED / ORANGE — lock icon, 'Security Alert' branding.
+    Subject: HACKX Password Reset Code: XXXXXX
+    """
+    gmail_user = os.getenv("GMAIL_USER")
+    gmail_pass = os.getenv("GMAIL_APP_PASSWORD")
+    if not gmail_user or not gmail_pass:
+        raise Exception("GMAIL_USER or GMAIL_APP_PASSWORD not set in .env")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"HACKX Password Reset Code: {otp}"
+    msg["From"]    = gmail_user
+    msg["To"]      = to_email
+
+    html = (
+        '<html><body style="margin:0;padding:0;background:#080808;font-family:monospace">'
+        '<table width="100%" cellpadding="0" cellspacing="0">'
+        '<tr><td align="center" style="padding:40px 16px">'
+        '<table width="420" cellpadding="0" cellspacing="0"'
+        ' style="background:#111;border:1px solid #3A1A1A;border-radius:8px;overflow:hidden">'
+
+        # Header — deep red gradient
+        '<tr><td style="background:linear-gradient(135deg,#2A0A00 0%,#5A1A00 100%);padding:28px 32px">'
+        '<table cellpadding="0" cellspacing="0"><tr>'
+        '<td style="background:#E53935;width:38px;height:38px;border-radius:6px;'
+        'text-align:center;vertical-align:middle;font-size:18px">&#128274;</td>'
+        '<td style="padding-left:12px">'
+        '<div style="color:#F0F0F0;font-size:22px;font-weight:800;letter-spacing:6px">HACKX</div>'
+        '<div style="color:#E57373;font-size:10px;letter-spacing:2px;margin-top:2px">PASSWORD RESET REQUEST</div>'
+        '</td></tr></table></td></tr>'
+
+        # Warning banner
+        '<tr><td style="background:#1A0800;border-top:1px solid #3A1A00;'
+        'border-bottom:1px solid #3A1A00;padding:12px 32px">'
+        '<div style="color:#FF8A65;font-size:11px;letter-spacing:1.5px">'
+        '&#9888;&nbsp; SECURITY ALERT &mdash; A password reset was requested for this account'
+        '</div></td></tr>'
+
+        # Body
+        '<tr><td style="padding:32px">'
+        '<div style="color:#F0F0F0;font-size:15px;line-height:1.6;margin-bottom:20px">'
+        'We received a request to reset the password linked to this email on HACKX.'
+        '</div>'
+
+        # OTP box — red theme
+        '<div style="background:#1A0800;border:2px solid #E53935;border-radius:8px;padding:28px;'
+        'text-align:center;margin:20px 0;box-shadow:0 0 24px rgba(229,57,53,0.2)">'
+        '<div style="color:#E57373;font-size:10px;letter-spacing:3px;margin-bottom:10px">PASSWORD RESET CODE</div>'
+        f'<div style="color:#FF5722;font-size:42px;font-weight:800;letter-spacing:14px">{otp}</div>'
+        '<div style="color:#5A2A2A;font-size:10px;letter-spacing:1px;margin-top:10px">&#9201; EXPIRES IN 10 MINUTES</div>'
+        '</div>'
+
+        '<div style="color:#7A4A4A;font-size:11px;line-height:1.6">'
+        'Enter this code in the HACKX app to set your new password.<br>'
+        'This code works <strong style="color:#E57373">once only</strong> and expires in 10 minutes.'
+        '</div>'
+
+        # Did not request box
+        '<div style="background:#1A0000;border:1px solid #3A1A1A;border-radius:6px;padding:14px;margin-top:20px">'
+        '<div style="color:#E57373;font-size:11px;font-weight:700;letter-spacing:1px;margin-bottom:6px">'
+        '&#128683; DIDN\'T REQUEST THIS?'
+        '</div>'
+        '<div style="color:#6A3A3A;font-size:11px;line-height:1.6">'
+        'If you did not request a password reset, ignore this email — your password will '
+        '<strong style="color:#E57373">not</strong> be changed and your account remains secure.'
+        '</div></div>'
+        '</td></tr>'
+
+        # Footer
+        '<tr><td style="background:#0A0000;padding:16px 32px;border-top:1px solid #2A1010">'
+        '<div style="color:#3A1515;font-size:9px;letter-spacing:2px;text-align:center">'
+        'HACKX &middot; SECURITY TEAM &middot; POWERED BY GROQ AI + OPENCV'
+        '</div></td></tr>'
+
+        '</table></td></tr></table></body></html>'
+    )
+    msg.attach(MIMEText(html, "html"))
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(gmail_user, gmail_pass)
+        server.sendmail(gmail_user, to_email, msg.as_string())
+
+
+def _send_registration_otp_email(to_email: str, otp: str):
+    """
+    REGISTRATION verification email.
+    Theme: GOLD / GREEN — camera icon, 'Welcome' branding.
+    Subject: Welcome to HACKX — Verify Your Email: XXXXXX
+    """
+    gmail_user = os.getenv("GMAIL_USER")
+    gmail_pass = os.getenv("GMAIL_APP_PASSWORD")
+    if not gmail_user or not gmail_pass:
+        raise Exception("GMAIL_USER or GMAIL_APP_PASSWORD not set in .env")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"Welcome to HACKX — Verify Your Email: {otp}"
+    msg["From"]    = gmail_user
+    msg["To"]      = to_email
+
+    html = (
+        '<html><body style="margin:0;padding:0;background:#080808;font-family:monospace">'
+        '<table width="100%" cellpadding="0" cellspacing="0">'
+        '<tr><td align="center" style="padding:40px 16px">'
+        '<table width="420" cellpadding="0" cellspacing="0"'
+        ' style="background:#111;border:1px solid #2A2A1A;border-radius:8px;overflow:hidden">'
+
+        # Header — gold gradient
+        '<tr><td style="background:linear-gradient(135deg,#1A1A00 0%,#2A2500 100%);padding:28px 32px">'
+        '<table cellpadding="0" cellspacing="0"><tr>'
+        '<td style="background:#FFD600;width:38px;height:38px;border-radius:6px;'
+        'text-align:center;vertical-align:middle;font-size:20px">&#128247;</td>'
+        '<td style="padding-left:12px">'
+        '<div style="color:#F0F0F0;font-size:22px;font-weight:800;letter-spacing:6px">HACKX</div>'
+        '<div style="color:#B8A000;font-size:10px;letter-spacing:2px;margin-top:2px">WELCOME &mdash; VERIFY YOUR EMAIL</div>'
+        '</td></tr></table></td></tr>'
+
+        # Welcome banner
+        '<tr><td style="background:#141400;border-top:1px solid #2A2A00;'
+        'border-bottom:1px solid #2A2A00;padding:12px 32px">'
+        '<div style="color:#FFD600;font-size:11px;letter-spacing:1.5px">'
+        '&#127775;&nbsp; One last step &mdash; confirm your email to activate your account'
+        '</div></td></tr>'
+
+        # Body
+        '<tr><td style="padding:32px">'
+        '<div style="color:#F0F0F0;font-size:15px;line-height:1.6;margin-bottom:20px">'
+        'Thanks for joining HACKX! Enter the code below to verify your email and create your account.'
+        '</div>'
+
+        # OTP box — gold theme
+        '<div style="background:#141400;border:2px solid #FFD600;border-radius:8px;padding:28px;'
+        'text-align:center;margin:20px 0;box-shadow:0 0 24px rgba(255,214,0,0.15)">'
+        '<div style="color:#B8A000;font-size:10px;letter-spacing:3px;margin-bottom:10px">EMAIL VERIFICATION CODE</div>'
+        f'<div style="color:#FFD600;font-size:42px;font-weight:800;letter-spacing:14px">{otp}</div>'
+        '<div style="color:#4A4000;font-size:10px;letter-spacing:1px;margin-top:10px">&#9201; EXPIRES IN 10 MINUTES</div>'
+        '</div>'
+
+        '<div style="color:#6A6000;font-size:11px;line-height:1.6">'
+        'Enter this code on the HACKX registration screen to complete your signup.<br>'
+        'This code is valid for <strong style="color:#B8A000">one-time use only</strong>.'
+        '</div>'
+
+        '<div style="border-top:1px solid #2A2A1A;margin-top:24px;padding-top:16px">'
+        '<div style="color:#3A3A20;font-size:10px">'
+        'If you did not create a HACKX account, you can safely ignore this email.'
+        '</div></div>'
+        '</td></tr>'
+
+        # Footer
+        '<tr><td style="background:#0A0A00;padding:16px 32px;border-top:1px solid #2A2A1A">'
+        '<div style="color:#2A2A10;font-size:9px;letter-spacing:2px;text-align:center">'
+        'HACKX &middot; POWERED BY GROQ AI + OPENCV'
+        '</div></td></tr>'
+
+        '</table></td></tr></table></body></html>'
+    )
+    msg.attach(MIMEText(html, "html"))
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(gmail_user, gmail_pass)
+        server.sendmail(gmail_user, to_email, msg.as_string())
+
+
+# ── Legacy single helper kept for any third-party callers ─────────────
+def _send_otp_email(to_email: str, otp: str, subject_prefix: str = "Login"):
+    """Route to the correct themed helper based on subject_prefix."""
+    if subject_prefix.lower() == "registration":
+        _send_registration_otp_email(to_email, otp)
+    elif "reset" in subject_prefix.lower() or "password" in subject_prefix.lower():
+        _send_reset_otp_email(to_email, otp)
+    else:
+        _send_login_otp_email(to_email, otp)
+
 
 # ═══════════════════════════════════════════════════════════════════════
 #  1. AUTH ENDPOINTS
@@ -113,7 +349,7 @@ class LoginRequest(BaseModel):
 class RegisterRequest(BaseModel):
     username: str
     password: str
-    email: str  # Required for registration (needed for OTP)
+    email: str
 
 class RegisterOtpSendRequest(BaseModel):
     username: str
@@ -127,6 +363,15 @@ class RegisterOtpVerifyRequest(BaseModel):
 class GoogleAuthRequest(BaseModel):
     id_token: str
 
+class ResetPasswordRequest(BaseModel):
+    email: str
+    new_password: str
+
+class UpdateUsernameRequest(BaseModel):
+    username: str
+
+
+# ── Login ─────────────────────────────────────────────────────────────
 @app.post("/auth/login")
 def login(req: LoginRequest):
     conn = __import__('database').get_conn()
@@ -152,14 +397,9 @@ def login(req: LoginRequest):
 # ── Step 1: Send registration OTP ─────────────────────────────────────
 @app.post("/auth/register/send-otp")
 async def register_send_otp(req: RegisterOtpSendRequest):
-    """
-    Validate registration fields and send OTP to the email.
-    The account is NOT created yet — only after OTP is verified.
-    """
     username = req.username.strip()
     email    = req.email.strip().lower()
 
-    # Basic validation
     if len(username) < 3:
         raise HTTPException(status_code=400, detail="Username must be at least 3 characters.")
     if len(req.password) < 4:
@@ -169,23 +409,21 @@ async def register_send_otp(req: RegisterOtpSendRequest):
 
     conn = __import__('database').get_conn()
 
-    # Check username availability
     row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
     if row:
         conn.close()
         raise HTTPException(status_code=409, detail="Username already taken. Please choose another.")
 
-    # Check email uniqueness — one email = one account, regardless of username
     row2 = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
     if row2:
         conn.close()
+        # Clear message so the Flutter side can show "Go to Login" CTA
         raise HTTPException(
             status_code=409,
             detail="This email is already registered. Please login instead."
         )
     conn.close()
 
-    # Generate OTP and store pending registration
     otp      = str(random.randint(100000, 999999))
     expires  = datetime.utcnow() + timedelta(minutes=10)
     _reg_otp_store[email] = {
@@ -195,12 +433,10 @@ async def register_send_otp(req: RegisterOtpSendRequest):
         "password":   req.password,
     }
 
-    # Send email
     try:
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None, _send_otp_email, email, otp, "Registration"
-        )
+        # Use the GOLD registration email
+        await loop.run_in_executor(None, _send_registration_otp_email, email, otp)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send OTP email: {str(e)}")
 
@@ -210,9 +446,6 @@ async def register_send_otp(req: RegisterOtpSendRequest):
 # ── Step 2: Verify OTP and create account ─────────────────────────────
 @app.post("/auth/register/verify-otp")
 def register_verify_otp(req: RegisterOtpVerifyRequest):
-    """
-    Verify the registration OTP and create the user account.
-    """
     email  = req.email.strip().lower()
     record = _reg_otp_store.get(email)
 
@@ -224,10 +457,8 @@ def register_verify_otp(req: RegisterOtpVerifyRequest):
     if req.otp.strip() != record["otp"]:
         raise HTTPException(status_code=401, detail="Incorrect OTP. Please try again.")
 
-    # OTP valid — clear and create user
     _reg_otp_store.pop(email, None)
 
-    # Final duplicate check before creating (race condition safety)
     if email_exists(email):
         raise HTTPException(
             status_code=409,
@@ -245,13 +476,9 @@ def register_verify_otp(req: RegisterOtpVerifyRequest):
     return {"token": token, "user": user}
 
 
-# ── Legacy /auth/register (kept for any direct API use) ───────────────
+# ── Legacy /auth/register ──────────────────────────────────────────────
 @app.post("/auth/register")
 def register(req: RegisterRequest):
-    """
-    Direct registration without OTP — kept for backward compatibility.
-    For the Flutter app, use /auth/register/send-otp + /auth/register/verify-otp instead.
-    """
     username = req.username.strip()
     if len(username) < 3:
         raise HTTPException(status_code=400, detail="Username must be at least 3 characters.")
@@ -309,20 +536,52 @@ async def google_login(req: GoogleAuthRequest):
 
     conn = __import__('database').get_conn()
     row = conn.execute(
-        "SELECT id, username FROM users WHERE username = ? OR email = ?", (email, email)
+        "SELECT id, username, email FROM users WHERE username = ? OR email = ?", (email, email)
     ).fetchone()
     conn.close()
+
     if row:
-        user = {"id": row["id"], "username": row["username"]}
+        user = {"id": row["id"], "username": row["username"], "email": row["email"]}
     else:
         rand_pass = secrets.token_hex(16)
         user = create_user(email, rand_pass, email)
         if not user:
             raise HTTPException(status_code=500, detail="Failed to create user account.")
+
     token = issue_token(user)
-    return {"token": token, "user": user}
+    # needs_username=True tells Flutter to show the UsernameSetupScreen
+    needs_username = user.get("username") == user.get("email")
+    return {"token": token, "user": user, "needs_username": needs_username}
 
 
+# ── Update username (after Google/OTP sign-up) ─────────────────────────
+@app.post("/auth/set-username")
+def set_username(req: UpdateUsernameRequest, user: dict = Depends(get_current_user)):
+    username = req.username.strip()
+    if len(username) < 3:
+        raise HTTPException(status_code=400, detail="Username must be at least 3 characters.")
+
+    conn = __import__('database').get_conn()
+    existing = conn.execute(
+        "SELECT id FROM users WHERE username = ? AND id != ?", (username, user["id"])
+    ).fetchone()
+    if existing:
+        conn.close()
+        raise HTTPException(status_code=409, detail="Username already taken. Please choose another.")
+
+    conn.execute("UPDATE users SET username = ? WHERE id = ?", (username, user["id"]))
+    conn.commit()
+    conn.close()
+
+    # Update the session too
+    for token, session_user in _sessions.items():
+        if session_user.get("id") == user["id"]:
+            _sessions[token]["username"] = username
+
+    return {"ok": True, "username": username}
+
+
+# ── Logout ────────────────────────────────────────────────────────────
 @app.post("/auth/logout")
 def logout(authorization: str = Header(None)):
     if authorization and authorization.startswith("Bearer "):
@@ -336,7 +595,7 @@ def me(user: dict = Depends(get_current_user)):
     return user
 
 
-# ── OTP (Login via email) ─────────────────────────────────────────────
+# ── OTP Login (send) — uses BLUE login email ──────────────────────────
 class OtpRequest(BaseModel):
     email: str
 
@@ -362,10 +621,38 @@ async def send_otp(req: OtpRequest):
     _otp_store[email] = {"otp": otp, "expires_at": expires}
     try:
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _send_otp_email, email, otp, "Login")
+        # BLUE login email
+        await loop.run_in_executor(None, _send_login_otp_email, email, otp)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
     return {"ok": True, "message": f"OTP sent to {email}"}
+
+
+# ── Send reset OTP — uses RED reset email ─────────────────────────────
+@app.post("/auth/send-reset-otp")
+async def send_reset_otp(req: OtpRequest):
+    """Dedicated endpoint for password-reset OTP — sends RED themed email."""
+    email = req.email.strip().lower()
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email address.")
+    conn = __import__('database').get_conn()
+    row = conn.execute(
+        "SELECT id FROM users WHERE email = ?", (email,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="No account found with this email.")
+    otp     = str(random.randint(100000, 999999))
+    expires = datetime.utcnow() + timedelta(minutes=10)
+    # Store in BOTH stores so /auth/verify-otp still works for the reset flow
+    _otp_store[email] = {"otp": otp, "expires_at": expires}
+    try:
+        loop = asyncio.get_event_loop()
+        # RED reset email
+        await loop.run_in_executor(None, _send_reset_otp_email, email, otp)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+    return {"ok": True, "message": f"Reset OTP sent to {email}"}
 
 
 @app.post("/auth/verify-otp")
@@ -380,6 +667,10 @@ def verify_otp(req: OtpVerify):
     if req.otp.strip() != record["otp"]:
         raise HTTPException(status_code=401, detail="Incorrect OTP. Please try again.")
     _otp_store.pop(email, None)
+
+    # Mark as verified for password reset flow
+    _reset_otp_store[email] = {"verified": True, "expires_at": datetime.utcnow() + timedelta(minutes=10)}
+
     user = get_user_by_email(email)
     if not user:
         conn = __import__('database').get_conn()
@@ -392,7 +683,33 @@ def verify_otp(req: OtpVerify):
     if not user:
         raise HTTPException(status_code=404, detail="No account found with this email.")
     token = issue_token(user)
-    return {"token": token, "user": user}
+    needs_username = user.get("username") == user.get("email")
+    return {"token": token, "user": user, "needs_username": needs_username}
+
+
+# ── PASSWORD RESET ─────────────────────────────────────────────────────
+@app.post("/auth/reset-password")
+def reset_password(req: ResetPasswordRequest):
+    email = req.email.strip().lower()
+    record = _reset_otp_store.get(email)
+    if not record or not record.get("verified"):
+        raise HTTPException(
+            status_code=403,
+            detail="Please verify your OTP before resetting password."
+        )
+    if datetime.utcnow() > record["expires_at"]:
+        _reset_otp_store.pop(email, None)
+        raise HTTPException(
+            status_code=400,
+            detail="Reset session expired. Please request a new OTP."
+        )
+    if len(req.new_password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters.")
+    ok = reset_user_password(email, req.new_password)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    _reset_otp_store.pop(email, None)
+    return {"ok": True, "message": "Password reset successfully. Please login with your new password."}
 
 
 # ═══════════════════════════════════════════════════════════════════════

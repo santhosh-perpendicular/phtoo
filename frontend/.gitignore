@@ -13,7 +13,7 @@
 migrate_working_dir/
 backend/.env
 *.db
-backend/uploads/
+backend/uploads
 __pycache__/
 *.pyc
 
